@@ -17,8 +17,9 @@
  */
 
 /*
- * Copyright (c) 2010, 2011 Richard Braun.
+ * Copyright (c) 2010, 2011 Free Software Foundation, Inc.
  * All rights reserved.
+ * Written by Richard Braun.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions

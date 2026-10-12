@@ -1,5 +1,6 @@
 /*
- * Copyright (c) 2010-2014 Richard Braun.
+ * Copyright (c) 2010-2014 Free Software Foundation.
+ * Written by Richard Braun.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by

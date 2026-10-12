@@ -112,7 +112,8 @@ struct multiboot32_module
 #define MB_ARD_MEMORY       1
 
 /*
- * Copyright (c) 2010, 2012 Richard Braun.
+ * Copyright (c) 2010, 2012 Free Software Foundation, Inc.
+ * Written by Richard Braun.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by

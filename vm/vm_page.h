@@ -303,7 +303,8 @@ extern unsigned int	vm_page_info(
 #define VM_PAGE_QUEUES_REMOVE(mem) vm_page_queues_remove(mem)
 
 /*
- * Copyright (c) 2010-2014 Richard Braun.
+ * Copyright (c) 2010-2014 Free Software foundation, Inc.
+ * Written by Richard Braun.
  *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by

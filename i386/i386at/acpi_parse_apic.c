@@ -1,6 +1,5 @@
 /* acpi_parse_apic.h - ACPI-MADT table parser. Source file
-   Copyright (C) 2018 Juan Bosco Garcia
-   Copyright (C) 2019 2020 Almudena Garcia Jurado-Centurion
+   Copyright (C) 2018-2020 Free Software Foundation, Inc.
    Written by Juan Bosco Garcia and Almudena Garcia Jurado-Centurion
 
    This file is part of Min_SMP.
