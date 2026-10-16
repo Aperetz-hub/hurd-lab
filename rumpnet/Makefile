@@ -15,7 +15,7 @@
 #   along with this program; if not, write to the Free Software
 #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
 
-RUMPLIBS=rump rumpuser rumpdev rumpdev_miiphy rumpdev_pci rumpvfs rumpdev_pci_if_wm rumpnet rumpnet_net rumpnet_netinet rumpnet_local rumpdev_bpf
+RUMPLIBS=rump rumpuser rumpdev rumpdev_miiphy rumpdev_pci rumpvfs rumpdev_pci_if_wm rumpdev_pci_if_pcn rumpnet rumpnet_net rumpnet_netinet rumpnet_local rumpdev_bpf
 # If we have a configured tree, include the configuration so that we
 # can conditionally build translators.
 ifneq (,$(wildcard ../config.make))
