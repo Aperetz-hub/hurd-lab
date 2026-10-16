@@ -126,11 +126,11 @@ struct bpf_program {
 
 struct bpf_hdr {
 #if defined (__x86_64__)
-  int64_t usec;
   int64_t sec;
+  int64_t usec;
 #else
-  int32_t usec;
   int32_t sec;
+  int32_t usec;
 #endif
   uint32_t bh_caplen;	/* length of captured portion */
   uint32_t bh_datalen;	/* original length of packet */
