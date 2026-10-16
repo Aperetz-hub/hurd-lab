@@ -1,0 +1,61 @@
+diff --git a/rumpnet/Makefile b/rumpnet/Makefile
+index 579197e..60f6bd5 100644
+--- a/rumpnet/Makefile
++++ b/rumpnet/Makefile
+@@ -15,7 +15,7 @@
+ #   along with this program; if not, write to the Free Software
+ #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ 
+-RUMPLIBS=rump rumpuser rumpdev rumpdev_miiphy rumpdev_pci rumpvfs rumpdev_pci_if_wm rumpnet rumpnet_net rumpnet_netinet rumpnet_local rumpdev_bpf
++RUMPLIBS=rump rumpuser rumpdev rumpdev_miiphy rumpdev_pci rumpvfs rumpdev_pci_if_wm rumpdev_pci_if_pcn rumpnet rumpnet_net rumpnet_netinet rumpnet_local rumpdev_bpf
+ # If we have a configured tree, include the configuration so that we
+ # can conditionally build translators.
+ ifneq (,$(wildcard ../config.make))
+diff --git a/rumpnet/net-rump.c b/rumpnet/net-rump.c
+index 659b0df..2030b97 100644
+--- a/rumpnet/net-rump.c
++++ b/rumpnet/net-rump.c
+@@ -126,11 +126,11 @@ struct bpf_program {
+ 
+ struct bpf_hdr {
+ #if defined (__x86_64__)
+-  int64_t usec;
+   int64_t sec;
++  int64_t usec;
+ #else
+-  int32_t usec;
+   int32_t sec;
++  int32_t usec;
+ #endif
+   uint32_t bh_caplen;	/* length of captured portion */
+   uint32_t bh_datalen;	/* original length of packet */
+diff --git a/utils/login.c b/utils/login.c
+index fb544fe..f54d74f 100644
+--- a/utils/login.c
++++ b/utils/login.c
+@@ -38,6 +38,7 @@
+ 
+ #include <netinet/in.h>
+ #include <arpa/inet.h>
++#include <stdint.h>
+ 
+ #include <sys/fcntl.h>
+ 
+@@ -165,8 +166,15 @@ add_utmp_entry (char *args, unsigned args_len, int inherit_host)
+   memset (&utmp, 0, sizeof(utmp));
+ 
+   gettimeofday (&current_time, NULL);
+-  /* For x86_64, sizeof(utmp.ut_tv) != sizeof(struct timeval) */
+-  utmp.ut_tv.tv_sec = current_time.tv_sec;
++  /* On 64-bit, struct timeval uses 64-bit time_t but utmp.ut_tv keeps
++     32-bit fields for file-format stability
++     (sizeof (utmp.ut_tv) != sizeof (struct timeval)).  Assign field by
++     field and saturate instead of wrapping after 2038. */
++  if (sizeof (utmp.ut_tv.tv_sec) < sizeof (current_time.tv_sec)
++      && current_time.tv_sec > INT32_MAX)
++    utmp.ut_tv.tv_sec = INT32_MAX;
++  else
++    utmp.ut_tv.tv_sec = current_time.tv_sec;
+   utmp.ut_tv.tv_usec = current_time.tv_usec;
+ 
+   strncpy (utmp.ut_name, envz_get (args, args_len, "USER") ?: "",

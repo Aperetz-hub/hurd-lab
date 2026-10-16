@@ -1,0 +1,8 @@
+# VM images : trop lourdes pour GitHub, à télécharger/créer localement.
+# Voir README.md (image Debian hurd-amd64 officielle + overlay qcow2 de dev).
+*.img
+*.qcow2
+*.qcow2c
+*.tar.gz
+*.ppm
+*.out

@@ -1,0 +1,43 @@
+From 12bd028b2dd20b80dfe5b14932c41c9cce1019bc Mon Sep 17 00:00:00 2001
+From: ben <ben@localhost>
+Date: Fri, 16 Oct 2026 13:54:32 +0200
+Subject: [PATCH] =?UTF-8?q?smp:=20propage=20la=20d=C3=A9gradation=20au=20c?=
+ =?UTF-8?q?ompteur=20global=20(smp=5Fset=5Fnumcpus)?=
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+Sinon scheduler/pmap/ddb continuent d'adresser les AP morts via
+smp_get_numcpus() et le boot re-pend plus tard sur une IPI sans ack.
+---
+ i386/i386/mp_desc.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/i386/i386/mp_desc.c b/i386/i386/mp_desc.c
+index 3f03961..767850d 100644
+--- a/i386/i386/mp_desc.c
++++ b/i386/i386/mp_desc.c
+@@ -323,6 +323,7 @@ start_other_cpus(void)
+ 	if (smp_startup_cpus(apic_get_current_cpu(), apboot_addr) != 0) {
+ 		printf("SMP: AP startup failed, continuing with BSP only\n");
+ 		ncpus = 1;
++		smp_set_numcpus(1);
+ 	} else {
+ 		unsigned started = 0;
+ 		for (cpu = 1; cpu < ncpus; cpu++) {
+@@ -339,8 +340,11 @@ start_other_cpus(void)
+ 			}
+ 			started++;
+ 		}
+-		/* Only rely on contiguously started APs below. */
++		/* Only rely on contiguously started APs below, and tell the
++		 * rest of the kernel (scheduler, pmap IPIs, ddb) so a dead
++		 * AP never receives IPIs. */
+ 		ncpus = started + 1;
++		smp_set_numcpus(ncpus);
+ 	}
+ 	printf("BSP: Completed SMP init\n");
+ 
+-- 
+2.47.3
+
