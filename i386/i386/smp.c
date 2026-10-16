@@ -52,12 +52,18 @@ static void smp_data_init(void)
 static void smp_send_ipi(unsigned logical_id, unsigned vector)
 {
     unsigned long flags;
+    int timeout = 100000;
 
     cpu_intr_save(&flags);
 
-    do {
+    while (lapic->icr_low.delivery_status == SEND_PENDING) {
+        if (--timeout == 0) {
+            printf("SMP: IPI delivery stuck, giving up send to %u\n",
+                   logical_id);
+            break;
+        }
         cpu_pause();
-    } while(lapic->icr_low.delivery_status == SEND_PENDING);
+    }
 
     apic_send_ipi(NO_SHORTHAND, FIXED, LOGICAL, ASSERT, EDGE, vector, logical_id);
 
@@ -74,14 +80,18 @@ void smp_pmap_update(unsigned logical_id)
     smp_send_ipi(logical_id, CALL_PMAP_UPDATE);
 }
 
-static void
+/* Bounded wait for IPI delivery. Returns 0 on success, -1 on timeout,
+ * so a dead APIC/QEMU SMP config degrades instead of hanging the boot. */
+static int
 wait_for_ipi(void)
 {
-    /* This could have a timeout, but if the IPI
-     * is never delivered, its a disaster anyway */
+    int timeout = 100000;
     while (lapic->icr_low.delivery_status == SEND_PENDING) {
-	cpu_pause();
+        if (--timeout == 0)
+            return -1;
+        cpu_pause();
     }
+    return 0;
 }
 
 static int
@@ -99,7 +109,10 @@ smp_send_ipi_init(int bsp_apic_id)
     apic_send_ipi(ALL_EXCLUDING_SELF, INIT, PHYSICAL, ASSERT, EDGE, 0, bsp_apic_id);
 
     /* Wait for delivery */
-    wait_for_ipi();
+    if (wait_for_ipi() != 0) {
+        printf("ESR error upon INIT assert: delivery timeout\n");
+        return -1;
+    }
 
     /* Deassert INIT IPI:
      *
@@ -111,7 +124,10 @@ smp_send_ipi_init(int bsp_apic_id)
     apic_send_ipi(ALL_EXCLUDING_SELF, INIT, PHYSICAL, DE_ASSERT, EDGE, 0, bsp_apic_id);
 
     /* Wait for delivery */
-    wait_for_ipi();
+    if (wait_for_ipi() != 0) {
+        printf("ESR error upon INIT deassert: delivery timeout\n");
+        return -1;
+    }
 
     err = lapic->error_status.r;
     if (err) {
@@ -142,8 +158,10 @@ smp_send_ipi_startup_twice(int bsp_apic_id, int vector)
         pit_udelay(10);
 
         /* Wait for other cpu to accept IPI */
-        wait_for_ipi();
-        send_err = lapic->error_status.r;
+        if (wait_for_ipi() != 0)
+            send_err = -1;
+        else
+            send_err = lapic->error_status.r;
 
         pit_udelay(10);
 
@@ -190,13 +208,14 @@ int smp_startup_cpus(unsigned bsp_apic_id, phys_addr_t start_eip)
 
     printf("Sending IPIs from BSP APIC ID %u...\n", bsp_apic_id);
 
-    smp_send_ipi_init(bsp_apic_id);
-    err = smp_send_ipi_startup_twice(bsp_apic_id, start_eip >> STARTUP_VECTOR_SHIFT);
+    err = smp_send_ipi_init(bsp_apic_id);
+    if (!err)
+        err = smp_send_ipi_startup_twice(bsp_apic_id, start_eip >> STARTUP_VECTOR_SHIFT);
     if (err) {
-        printf("FATAL: APs failed to start\n");
-        while(1) {
-            cpu_pause();
-        }
+        /* Do not hang the machine: APs are still experimental, fall back
+         * to the BSP so the boot can continue (e.g. QEMU -smp 2). */
+        printf("SMP: APs failed to start (err 0x%x), continuing with BSP only\n", err);
+        return -1;
     }
     printf("done\n");
     return 0;

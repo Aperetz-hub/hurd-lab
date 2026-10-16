@@ -44,6 +44,7 @@
 #include <i386at/idt.h>
 #include <i386at/int_init.h>
 #include <i386/cpu.h>
+#include <i386/pit.h>
 #include <i386/smp.h>
 
 #include <i386at/model_dep.h>
@@ -319,14 +320,27 @@ start_other_cpus(void)
 		machine_slot[cpu].running = FALSE;
 	}
 
-	smp_startup_cpus(apic_get_current_cpu(), apboot_addr);
+	if (smp_startup_cpus(apic_get_current_cpu(), apboot_addr) != 0) {
+		printf("SMP: AP startup failed, continuing with BSP only\n");
+		ncpus = 1;
+	} else {
+		unsigned started = 0;
+		for (cpu = 1; cpu < ncpus; cpu++) {
+			int waited_ms = 0;
+			printf("Waiting for AP %d\n", cpu);
 
-	for (cpu = 1; cpu < ncpus; cpu++) {
-		printf("Waiting for AP %d\n", cpu);
-
-		do {
-			cpu_pause();
-		} while (machine_slot[cpu].running == FALSE);
+			while (machine_slot[cpu].running == FALSE && waited_ms < 5000) {
+				pit_udelay(1000);
+				waited_ms++;
+			}
+			if (machine_slot[cpu].running == FALSE) {
+				printf("SMP: AP %d did not start within 5s, skipping\n", cpu);
+				break;
+			}
+			started++;
+		}
+		/* Only rely on contiguously started APs below. */
+		ncpus = started + 1;
 	}
 	printf("BSP: Completed SMP init\n");
 
