@@ -38,6 +38,7 @@
 
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <stdint.h>
 
 #include <sys/fcntl.h>
 
@@ -165,8 +166,15 @@ add_utmp_entry (char *args, unsigned args_len, int inherit_host)
   memset (&utmp, 0, sizeof(utmp));
 
   gettimeofday (&current_time, NULL);
-  /* For x86_64, sizeof(utmp.ut_tv) != sizeof(struct timeval) */
-  utmp.ut_tv.tv_sec = current_time.tv_sec;
+  /* On 64-bit, struct timeval uses 64-bit time_t but utmp.ut_tv keeps
+     32-bit fields for file-format stability
+     (sizeof (utmp.ut_tv) != sizeof (struct timeval)).  Assign field by
+     field and saturate instead of wrapping after 2038. */
+  if (sizeof (utmp.ut_tv.tv_sec) < sizeof (current_time.tv_sec)
+      && current_time.tv_sec > INT32_MAX)
+    utmp.ut_tv.tv_sec = INT32_MAX;
+  else
+    utmp.ut_tv.tv_sec = current_time.tv_sec;
   utmp.ut_tv.tv_usec = current_time.tv_usec;
 
   strncpy (utmp.ut_name, envz_get (args, args_len, "USER") ?: "",
