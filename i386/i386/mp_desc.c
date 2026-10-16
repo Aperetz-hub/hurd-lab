@@ -323,6 +323,7 @@ start_other_cpus(void)
 	if (smp_startup_cpus(apic_get_current_cpu(), apboot_addr) != 0) {
 		printf("SMP: AP startup failed, continuing with BSP only\n");
 		ncpus = 1;
+		smp_set_numcpus(1);
 	} else {
 		unsigned started = 0;
 		for (cpu = 1; cpu < ncpus; cpu++) {
@@ -339,8 +340,11 @@ start_other_cpus(void)
 			}
 			started++;
 		}
-		/* Only rely on contiguously started APs below. */
+		/* Only rely on contiguously started APs below, and tell the
+		 * rest of the kernel (scheduler, pmap IPIs, ddb) so a dead
+		 * AP never receives IPIs. */
 		ncpus = started + 1;
+		smp_set_numcpus(ncpus);
 	}
 	printf("BSP: Completed SMP init\n");
 
