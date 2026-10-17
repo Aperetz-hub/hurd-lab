@@ -1,0 +1,17 @@
+# This file describes the network interfaces available on your system
+# and how to activate them. For more information, see interfaces(5).
+
+source /etc/network/interfaces.d/*
+
+# The loopback network interface
+auto lo
+iface lo inet loopback
+
+# Interface principale : virtio-net (rump vioif).
+# pre-up demarre le translator rumpnet + le devnode /dev/vioif0.
+auto /dev/vioif0
+iface /dev/vioif0 inet dhcp
+	pre-up /usr/local/sbin/start-rumpnet.sh
+
+# Secours (non auto) : e1000 via netdde.  Activer avec : ifup /dev/eth0
+iface /dev/eth0 inet dhcp

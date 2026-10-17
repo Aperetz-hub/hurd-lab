@@ -131,10 +131,28 @@ Branches locales `fork/x86_64` créées sur `mig`, `gnumach`, `hurd` (upstream =
   utiliser `ifconfig` sur l'instance vivante, ou configurer vioif dès le boot.
   Récupération : reboot (mais `/etc/init.d/networking` stop → `dhclient -r`
   peut figer le shutdown sans réseau → `system_reset` + fsck).
-- **Intégration boot (à faire)** : démarrer rumpnet avant ifup
-  (`/etc/network/interfaces.d/` + `pre-up` créant `/dev/rumpnet` et
-  `/dev/vioif0`) et remplacer `iface /dev/eth0 inet dhcp` par
-  `iface /dev/vioif0 inet dhcp`. Garder `eth0` en secours tant que non validé.
+## virtio-net (vioif) : intégration au boot (17/10/2026) — FAIT, validé
+
+- Fichiers (dans `scripts/`) :
+  - `start-rumpnet.sh` → installé `/usr/local/sbin/start-rumpnet.sh` : démarre
+    le translator rumpnet + le devnode `/dev/vioif0` (idempotent, log
+    `/tmp/start-rumpnet.log`).
+  - `interfaces.vioif` → `/etc/network/interfaces` : `auto /dev/vioif0` avec
+    `pre-up /usr/local/sbin/start-rumpnet.sh` ; `eth0` conservé en secours
+    (non auto) ; sauvegarde `/etc/network/interfaces.eth0.bak`.
+- **Résultat après reboot** : boot propre (pas de hang au shutdown car `eth0`
+  n'est plus `auto` → plus de `dhclient -r` sur un réseau mort). L'interface
+  unique est `/dev/vioif0` (MAC `52:54:00:12:34:58`) et `pfinet` a bien
+  `--gateway=10.0.2.2` (au boot pfinet est neuf → **pas de `EBUSY`**).
+  Vérifié : `ping 10.0.2.2`, `ping 8.8.8.8`, DNS (`getent ahostsv4`),
+  HTTPS (`wget https://example.com` rc=0), SSH via hostfwd hôte 2223.
+- **Caveat** : ne pas `ifup /dev/eth0` sur un système vivant en vioif : la
+  méthode `dhcp`/`fsysopts` de ifup reconstruit les options pfinet et **perd
+  `--gateway`** (plus d'accès externe) en plus d'ajouter une 2e interface.
+  En cas de besoin, rebooter (l'état de boot est propre) ou refixer la route.
+- Récupération si échec : console graphique X (xdm) → terminal
+  (`Ctrl+Alt+T`) → `sudo cp /etc/network/interfaces.eth0.bak
+  /etc/network/interfaces && sudo ifup /dev/eth0 && sudo reboot`.
 
 ## Références
 
