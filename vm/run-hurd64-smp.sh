@@ -2,10 +2,14 @@
 # Test -smp 2 (console pure / headless) sur un OVERLAY JETABLE (backing
 # hurd-dev.qcow2) — le disque de dev n'est jamais modifie.
 #   * `-smp 2` = gel dans rumpdisk (attache AHCI) avec l'IOAPIC emule par
-#     KVM (`kernel-irqchip=on`, defaut). Avec `MACHINE=q35,kernel-irqchip=split`
+#     KVM (`kernel-irqchip=on`, defaut), le plus souvent mais PAS toujours
+#     (gel intermittent : course/timing). Avec `MACHINE=q35,kernel-irqchip=split`
 #     (IOAPIC emule par QEMU) le noyau fork demarre en -smp 2 et le clavier
-#     repond — cf. docs/suivi.md, « Autopsie du gel -smp 2 — 2e passe ».
-#   * l'option de boot `maxcpus=N`/`nosmp` ne contourne pas le probleme.
+#     repond — cf. docs/suivi.md, « Autopsie du gel -smp 2 » (2e/3e passe).
+#   * l'option de boot `maxcpus=N`/`nosmp` (AP non demarre) evite le gel la
+#     plupart du temps (5 boots / 6 mesures en 3e passe) mais pas toujours :
+#     c'est le demarrage de l'AP qui est le declencheur principal, et il reste
+#     une composante de course (cf. docs/suivi.md, 3e passe).
 #
 # Variables d'environnement :
 #   SMP=2        nb de CPU QEMU (defaut 2)

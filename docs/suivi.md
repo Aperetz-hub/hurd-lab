@@ -156,16 +156,23 @@ Branches locales `fork/x86_64` créées sur `mig`, `gnumach`, `hurd` (upstream =
 
 ## Reprise `-smp 2` (17/10/2026) — nouvelle observation
 
-> ⚠️ **Nuance (voir § *Autopsie du gel `-smp 2`*)** : les mesures « CPU0 spin
-> utilisateur `RIP=0x5225ac` » ci-dessous ont été prises **avec le stub gdb
-> (`-s`) sans `cont`** → elles sont faussées par la mise en pause automatique
-> de QEMU. Sur overlay neuf, le blocage réel se produit **plus tôt**, dans
-> l'attache AHCI de `rumpdisk` (`ahcisata0: 64-bit DMA`).
+> ⚠️ **Nuance (voir § *Autopsie du gel `-smp 2`*, 2e/3e passes)** : les mesures
+> « CPU0 spin utilisateur `RIP=0x5225ac` » ci-dessous ont été prises **avec le
+> stub gdb (`-s`) et sans reprise vérifiée** → elles sont faussées par la mise
+> **en pause** de la VM (session gdb terminée sans `detach`, `info status` =
+> `paused`). Sur overlay neuf, le blocage réel se produit **plus tôt**, dans
+> l'attache AHCI de `rumpdisk` (`ahcisata0: 64-bit DMA`) — et il est
+> **intermittent** (voir 3e passe).
 
 - Le noyau par défaut de la VM dev (entrée GRUB 0) est déjà
   `gnumach-smp-test.gz` : `-smp 1` = système fonctionnel (réseau vioif +
   internet). Le test `-smp 2` = relancer QEMU avec `-smp 2` (même disque,
   même noyau) — de préférence sur un overlay jetable (cf. README).
+  *(Vérifié depuis, 3e passe : l'image de base `hurd-dev.qcow2` démarre en fait
+  le **stock**, `/boot/gnumach-1.8-amd64-up.gz` = 236 555 o, md5
+  `58334bef…` ; le noyau **fork** (1 611 776 o) est installé dans les overlays
+  — `hurd-smp-test.qcow2`, `ovl-stock-smp2.qcow2` — cf. « Identité des
+  noyaux ».)*
 - **Observation révisée** : en `-smp 2` le boot va **plus loin** que l'ancien
   « figé après `ahcisata0: 64-bit DMA` ». (Mesure faite à l'époque avec X
   actif ; le projet est passé depuis en **console pure, sans X**.) Le boot
@@ -200,10 +207,13 @@ Branches locales `fork/x86_64` créées sur `mig`, `gnumach`, `hurd` (upstream =
 - **Usage** : ajouter `nosmp` (ou `maxcpus=1`) à la ligne
   `multiboot /boot/gnumach… root=part:2:device:wd0` de GRUB. Confirmation au
   boot : `SMP: maxcpus=N, limite le noyau a N CPU sur M`.
-- **Ce que ça ne fait PAS** : ça ne répare **pas** les races SMP. Un noyau
-  `--enable-ncpus≥2` lancé sur `-smp 2` **avec** tous les CPU continue de
-  geler (cf. § *Autopsie du gel `-smp 2`*). L'option sert uniquement à
-  *éviter* le SMP (mode mono fiable), pas à le rendre fonctionnel.
+- **Ce que ça fait (et ne fait pas)** : `maxcpus=1` **évite le gel la plupart
+  du temps** — vérifié (3e passe, gdb : `smp_info.num_cpus = 1`, AP jamais
+  démarré) : `-smp 2` **+ `maxcpus=1` boote 5 fois sur 6**, alors que `-smp 2`
+  **sans option gèle 4 fois sur 4**. Le **démarrage de l'AP est donc le
+  déclencheur principal** (le *build SMP* seul, en `-smp 1`, ne gèle jamais).
+  Il subsiste une **intermittence résiduelle** (1 gel / 6 avec `maxcpus=1`).
+  L'option est un contournement utile, pas un correctif.
 - **Statut** : **conservée**. Arbre de travail propre, commit poussé sur
   `remotes/github/fork/x86_64`. Aucun revert.
 
@@ -217,11 +227,14 @@ libsource-highlight, libdebuginfod) puis
 `LD_LIBRARY_PATH=/tmp/gdbroot/usr/lib/x86_64-linux-gnu /tmp/gdbroot/usr/bin/gdb
 /tmp/gnumach-new` (noyau fork, ELF avec `debug_info`).
 
-**Piège méthodologique majeur** : avec `-gdb`, QEMU **met la VM en pause dès
-qu'elle devient oisive** (~20 s) — `info status` → `VM status: paused`. Toute
-mesure faite sans `cont` est donc faussée (HPET « figé », SSH qui expire,
-`CPL=3`). **Toujours faire `cont` après un `detach` gdb et vérifier
-`info status`.**
+**Piège méthodologique majeur (corrigé en 3e passe)** : avec `-gdb`, si une
+session gdb se termine **sans `detach`** (script gdb interrompu par une erreur,
+par ex.), QEMU laisse la VM **en pause** : `info status` → `VM status: paused`.
+Tous les échantillons (écran VGA, RIP) sont alors **figés** et donnent
+l'illusion d'un « gel » — c'est ce qui a produit de fausses mesures les jours
+précédents (dont le « boot » d'une manche). HMP `cont` est ignoré tant que le
+stub gdb n'a pas été libéré. **Toujours terminer le script gdb par `detach`,
+puis vérifier `info status` = `running` avant toute mesure.**
 
 ### Résultat (reproductible)
 
@@ -234,7 +247,8 @@ mesure faite sans `cont` est donc faussée (HPET « figé », SSH qui expire,
     ahcisata0: 64-bit DMA
     ```
     (constaté 4 fois, dont > 5 min sans progression ; `cont` + `sendkey` ne
-    débloquent pas).
+    débloquent pas). En 3e passe, `-smp 2` sans option gèle **4 manches sur 4**,
+    mais le gel est **intermittent** dès qu'on retire l'AP (voir § 3e passe).
 - Cette sortie vient du **traducteur utilisateur `rumpdisk`**
   (`/hurd/rumpdisk.static`) : la chaîne `ahcisata` **n'est pas** dans le noyau
   (`strings gnumach | grep -c ahcisata` = 0) et `rump` n'est pas compilé dans
@@ -271,12 +285,14 @@ mesure faite sans `cont` est donc faussée (HPET « figé », SSH qui expire,
 ⇒ Chantier **non isolé** (rump/Hurd, pas un simple verrou gnumach) :
 `-smp 2` reste **inutilisable** ; `-smp 1` reste la référence fonctionnelle.
 
-> ⚠️ **Mise à jour (2e passe, même jour)** : l'interprétation « course SMP dans
-> `device/intr.c` / IRQ utilisateur masqué » ci-dessus est **écartée** par les
-> mesures de la section suivante. La panne est **en amont** : aucun IRQ
-> matériel n'arrive au CPU dès que l'**IOAPIC est émulé par KVM**
-> (`kernel-irqchip=on`), alors que tout fonctionne avec un IOAPIC émulé par
-> QEMU (`kernel-irqchip=split`). Voir § *Autopsie du gel `-smp 2` — 2e passe*.
+> ⚠️ **Mise à jour (2e puis 3e passe, même jour)** : l'interprétation « course
+> SMP dans `device/intr.c` / IRQ utilisateur masqué » ci-dessus est **écartée** :
+> au gel l'IRQ utilisateur (PCI 16/AHCI) n'est **jamais établie** — le blocage
+> est *avant* `pci_intr_establish`. L'interprétation « aucun IRQ matériel
+> n'arrive dès que l'IOAPIC est émulé par KVM » (2e passe) est **également
+> écartée** par la 3e passe : sous `kernel-irqchip=on` l'IOAPIC est correctement
+> programmé et les IRQ matérielles sont bien délivrées pendant le gel. Voir les
+> deux sections suivantes.
 
 ## Autopsie du gel `-smp 2` — 2e passe : différentiel IOAPIC **KVM vs QEMU** (17/10/2026)
 
@@ -297,7 +313,7 @@ Méthode nouvelle (aucune écriture dans `hurd-dev.qcow2` ; overlays jetables) :
   ces accès ne sont **pas** lisibles depuis l'hôte (région possédée par
   l'irqchip noyau) : d'où l'échec des lectures précédentes.
 
-### Résultat décisif : le gel suit l'IOAPIC émulé par KVM
+### Résultat décisif : le gel suit l'IOAPIC émulé par KVM (mais pas pour la raison supposée — voir 3e passe)
 
 | configuration QEMU | noyau | `-smp` | résultat |
 |---|---|---|---|
@@ -314,15 +330,101 @@ Méthode nouvelle (aucune écriture dans `hurd-dev.qcow2` ; overlays jetables) :
   login / `sshd`.
 - **Avec l'IOAPIC émulé par QEMU (`kernel-irqchip=split`), le même noyau fork
   en `-smp 2` démarre normalement et le clavier répond** (chaque `sendkey ret`
-  rend un nouveau prompt `login:`). ⇒ ni rumpdisk ni la logique gnumach ne
-  sont fautifs en soi : c'est **l'interaction avec l'IOAPIC du noyau hôte KVM**
-  qui échoue.
+  rend un nouveau prompt `login:`). Le différentiel KVM vs QEMU est donc réel,
+  mais **la cause n'est pas « l'IOAPIC KVM mal programmé »** : la 3e passe (plus
+  bas) montre que sous `kernel-irqchip=on` les entrées redir sont **correctes**
+  et les IRQ matérielles **délivrées** au moment du gel. Le mode `split` change
+  surtout le **timing** (accès IOAPIC sortants au lieu d'écritures directes).
 - Contrôle : le **noyau stock** (2026-02-24, suffixe `-up`) fonctionne avec
   l'IOAPIC KVM ⇒ l'IOAPIC KVM n'est pas intrinsèquement cassé ; la régression
   est bien côté **noyau du fork**.
 - Le noyau fork est un **build SMP** (`NCPUS=2`) alors que le stock est `-up`.
-  La panne clavier apparaît **aussi en `-smp 1`** ⇒ elle n'exige pas 2 vCPU :
-  c'est le *build SMP* (et/ou les commits post-24/02) qui diffère.
+  En `-smp 1` (1 seul vCPU) le fork **ne gèle jamais** (vérifié : clavier OK,
+  `info irq` IRQ1 10→12). En `-smp 2` il gèle **4 fois sur 4** ; en `-smp 2`
+  **+ `maxcpus=1`** (AP jamais démarré) il boote **5 fois sur 6** ⇒ c'est le
+  **démarrage effectif de l'AP** qui est le déclencheur principal (3e passe).
+
+### 3e passe : `info pic`/`info irq` sous KVM, rôle de l'AP, intermittence (17/10/2026)
+
+⚠️ **Correction de la 2e passe** : l'affirmation « aucun IRQ matériel n'arrive
+dès que l'IOAPIC est émulé par KVM » est **fausse**. Sous `kernel-irqchip=on`
+l'IOAPIC appartient bien à KVM, mais HMP `info pic` en expose l'état exact, et
+cet état est **correct** ; les IRQ matérielles **sont délivrées** pendant le gel
+(mesures gdb de la 2e passe : `hardclock` ≈ 1854 en ~18 s à 100 Hz,
+`ioapic_irq_eoi(pin==0)` = 1854, `kdintr` = 10). Le noyau vit ; c'est
+l'**utilisateur** (`rumpdisk`, chaîne ACPI `_CRS` → `pci_intr_establish`) qui ne
+progresse plus.
+
+**Tables de routage comparées** (HMP `info pic` ; IOAPIC KVM `ver=0x11 id=0x00`,
+`sel` = dernière GSI sélectionnée) :
+
+| cas | `sel` | pin 1 (kbd) | pin 2 (PIT) | pin 4 | pin 9 | pin 12 | pin 16 (AHCI) | pin 23 |
+|---|---|---|---|---|---|---|---|---|
+| stock `-up`, `-smp 2` (OK) | `0x30` | `0x0031` v49 | `0x0030` v48 | `0x0034` v52 | `0x8039` | `0x003c` v60 | **`0xa040` non masqué** | **`0xa047` non masqué** |
+| fork `-smp 1` (OK) | `0x30` | idem | idem | idem | idem | idem | **non masqué** | **non masqué** |
+| fork `-smp 2` (**gel**) | `0x22` | idem | idem | idem | idem | `0x1003c` masqué | `0x1a040` **masqué** | `0x1a047` **masqué** |
+
+⇒ au gel, les pins 1/2/4/9 sont **identiques** aux cas qui fonctionnent
+(`info irq` : `1:3`, `4:1`) : l'IOAPIC n'est **pas** mal programmé par KVM. La
+seule différence est l'**établissement de l'IRQ 16 (AHCI)** : au gel, pin 16 est
+**encore masqué** ⇒ le blocage survient **avant** `pci_intr_establish`, soit
+exactement entre `ahcisata0: 64-bit DMA` et `ahcisata0: interrupting at …`.
+Dans les cas qui marchent, pin 16 est démasqué et `info irq` affiche `10:` et
+`16:` à ~13 000–33 000 (activité AHCI ; la même ligne comptée via PIC **et**
+IOAPIC).
+
+**Le démarrage de l'AP est le déclencheur principal.** Manches automatisées
+(`/tmp/gm/trials.sh` : overlay copié à l'identique avant chaque manche, aucune
+intervention gdb sauf l'injection `maxcpus=1`, lecture d'écran par
+`xp/16384cb 0xb8000`) :
+
+| recette (`-smp 2`, IOAPIC KVM, noyau fork) | résultat |
+|---|---|
+| AP démarré (aucune option) | **gel 4/4** (+ `F2`, même point) |
+| `maxcpus=1` — AP **non** démarré (gdb : `smp_info.num_cpus = 1`) | **boot 5/6** (gel 1/6) |
+| `kernel-irqchip=split` | **boot** |
+| `-smp 1` (1 vCPU, mais *build* SMP) | **boot**, clavier OK (`info irq` IRQ1 10→12) |
+| stock `-up`, `-smp 2` | **boot**, clavier OK (IRQ1 → 237) |
+
+⇒ `-smp 1` (build SMP, 1 vCPU) **ne gèle jamais** : le build SMP seul est
+innocent. Avec un 2ᵉ vCPU **et** l'AP démarré, le gel est quasi systématique
+(4/4) ; avec un 2ᵉ vCPU mais AP **non** démarré, il devient rare (1/6). Le code
+fork-only de la mise en route de l'AP (`mp_desc.c` : `lapic_disable()` puis
+attente `pit_udelay(1000)` avec IT coupées, puis `lapic_enable()`) est donc le
+**suspect principal** — mais il n'est **pas** la cause unique (le 1/6 avec
+`maxcpus=1`, où ce code n'est pas exécuté, montre une **composante de course**).
+
+**Intermittence / course** : le même `maxcpus=1` qui boote 5 fois sur 6 a gelé
+une fois (`MX`) ; à l'inverse, les « boots » obtenus après une série de pauses
+gdb s'expliquent par le **timing** déplacé. Le mode `kernel-irqchip=split`
+(différentiel réel, reproductible) change surtout le timing des accès IOAPIC.
+
+**Audit fenêtre 2026-02-24 → HEAD** (`git diff v1.8+git20260224..HEAD`) :
+
+| fichier | Δ | contenu |
+|---|---|---|
+| `i386/i386/mp_desc.c` | +34 | **fork-only** : attente AP bornée (5 s) avec `pit_udelay(1000)`, dégradation BSP (`smp_set_numcpus(1)`) — exécuté **seulement si `ncpus > 1`** |
+| `i386/i386/smp.c` | +96 | **fork-only** : option `maxcpus=N`/`nosmp` ; `smp_send_ipi`/`wait_for_ipi` bornés (dégradation au lieu du blocage) |
+| `i386/i386/pit.c` | +16 | **upstream fenêtre** `38e82f35` : `pit_udelay` corrigé (> `MAX_PIT_USEC`, sémantique `usec`, `val` 64 bits) — c'est aussi lui qui remplace `hpet_udelay` par `pit_udelay` dans `smp.c` |
+| `i386/i386/apic.c` | +12 | upstream fenêtre `40166870` : HPET optionnel (`hpet_init` retourne si absent, `hpclock_read_counter` garde `hpet_addr`) |
+| `kern/processor.c` | +7 | upstream fenêtre `a30402ef` : `pset->max_priority` `BASEPRI_USER` → `BASEPRI_SYSTEM` (+ `processor_name_self`) |
+| `kern/sched_prim.c` | +6 | upstream fenêtre `d30629e6` : gardes `processor != PROCESSOR_NULL` avant `processor->state == PROCESSOR_IDLE` |
+| `kern/ast.c`, `kern/machine.c` | ±2 | fenêtre : gardes `#ifndef MIGRATING_THREADS` retirées |
+| `kern/debug.c` | +6 | fenêtre : `panic_init` initialise `Assert_print_lock` + `panic_lock` |
+| `x86_64/locore.S` | −88 | retrait MACH_TTD, `cpuid`/`ebx`, chemins boot |
+| `i386/spl.S`, `x86_64/spl.S` | ±8 | cosmétique |
+| `ioapic.c`, `i386at/interrupt.S`, `int_init.c`, `idt.c`, `irq.c` | 0 | **inchangés** |
+| `i386/i386at/model_dep.c` | +439 | multiboot2/UEFI, réordonnancement `machine_init` |
+
+Aucun de ces deltas ne démontre un défaut isolé ; le seul code **fork-only
+exécuté uniquement quand l'AP démarre** est la boucle `mp_desc.c`
+(`pit_udelay(1000)` / canal 2 PIT / port `0x61`, IT coupées par `splhigh()`),
+avec le `lapic_disable()`/`lapic_enable()` qui l'encadre (ceux-ci sont upstream).
+C'est la piste à instruire en priorité (cf. « Prochaines expériences »).
+
+À noter aussi dans la fenêtre : la paire `f41f8801` « periodic intrs: Change the
+clock source to be lapic timer on all cpus » + son `ddb0766a` **Revert** (effet
+net nul), et les deux commits fork `99a21a39`/`c11e6cea` (dégradation AP).
 
 ### Entrées IOAPIC observées (dans le cas qui marche, `kernel-irqchip=split`)
 
@@ -350,39 +452,54 @@ Le noyau programme donc correctement pin1/pin2 ; les pins PCI restent
   qui marche **ne casse rien**. ⇒ ce drapeau n'est pas le déclencheur.
 - **`ioapic.c` est identique** entre le noyau stock (2026-02-24) et le HEAD du
   fork : `ioapic.c`, `int_init.c`, `idt.c`, `irq.c`, `apic.h`, `device/intr.c`,
-  `kd.c`, `spl.c` → **aucune modification** (`git diff f7debdac..HEAD`).
+  `kd.c`, `spl.c` → **aucune modification** (`git diff v1.8+git20260224..HEAD`,
+  voir la table d'audit de la 3e passe).
 - **`device/intr.c`** (`assert_wait`/`queue_intr`/`irq_acknowledge`/
   `intr_thread`) : **jamais atteinte** — `irqtab.tot_num_intr = 0`, files
   `main_intr_queue` (id 9/16/23) à `interrupts = n_unacked = 0`,
   `nested_irqs[].ndisabled = 0`, handlers `user_intr_handlers` bien installés.
-  Le défaut est **au-dessous** : aucun IRQ matériel n'atteint le CPU (seule
-  l'IT horloge LAPIC fonctionne). `kdintr` est bien en place (`ivect[1]`) et
-  `unexpected ACK from keyboard` prouve que `kdinit` (donc
-  `unmask_irq(KBD_IRQ)`) s'exécute aussi dans le noyau fork.
-- **Fenêtre de régression** (2026-02-24 → HEAD) : `model_dep.c` (multiboot2/UEFI
-  + réordonnancement `machine_init` uniquement), `mp_desc.c` (+34 : dégradation
-  AP du fork, avec `pit_udelay(1000)` dans la boucle d'attente — exécutée
-  **seulement si `ncpus > 1`**), `mach_clock.c` (`host_adjust_time64`),
-  `apic.c` (HPET optionnel, garde `hpclock_read_counter`), `smp.c`
-  (`hpet_udelay`→`pit_udelay`), `locore.S` (retrait MACH_TTD, `cpuid`/ebx).
-  Aucune ne démontre directement « IRQ jamais délivrée ».
+  Le point de blocage est **avant** cette mécanique : au gel, l'IRQ PCI 16
+  (AHCI) n'est **pas encore établie** par `rumpdisk` (`irqtab.tot_num_intr = 0`,
+  pin 16 encore masqué — 3e passe). Les IRQ matérielles déjà établies
+  (clavier IRQ1, PIT remappé) **sont** bien délivrées et acquittées ; `kdintr`
+  est en place (`ivect[1]`) et `unexpected ACK from keyboard` prouve que
+  `kdinit` (donc `unmask_irq(KBD_IRQ)`) s'exécute aussi dans le noyau fork.
+- **Fenêtre de régression** (2026-02-24 → HEAD, `git diff
+  v1.8+git20260224..HEAD`) : détail fichier par fichier dans la table de la 3e
+  passe. En résumé : `ioapic.c`/`interrupt.S`/`int_init.c`/`idt.c`/`irq.c`
+  **inchangés** ; côté fork, `mp_desc.c` (+34 : attente AP bornée +
+  `pit_udelay(1000)` + dégradation BSP, seulement si `ncpus > 1`) et `smp.c`
+  (+96 : `maxcpus`/`nosmp`, IPI bornées) ; dans la fenêtre upstream,
+  `pset->max_priority` (`BASEPRI_USER`→`BASEPRI_SYSTEM`), gardes
+  `processor != PROCESSOR_NULL` de `sched_prim.c`, correction de `pit_udelay`
+  (`pit.c`), HPET optionnel (`apic.c`), `model_dep.c` (multiboot2/UEFI),
+  `locore.S` (retrait MACH_TTD), `spl.S` (cosmétique).
 
 ### Conclusion d'audit — pas de correctif à l'aveugle
 
 - L'hypothèse de départ (verrouillage `assert_wait` + `queue_intr` +
   `device_intr_ack` + `ioapic_toggle` dans `device/intr.c`) est **écartée** :
-  la mécanique est cohérente et **jamais sollicitée** (rien d'enfilé, rien de
-  masqué, aucun verrou tenu). Le défaut est en amont : **obtention des IRQ
-  matériels par un noyau *build SMP* vis-à-vis de l'IOAPIC émulé par KVM**.
+  la mécanique est cohérente et **jamais sollicitée** au gel (rien d'enfilé,
+  rien de masqué, aucun verrou tenu) — parce que l'IRQ PCI 16 n'est pas encore
+  établie. L'hypothèse « l'IOAPIC KVM ne délivre pas les IRQ » est **écartée**
+  aussi (3e passe : tables correctes, IRQ délivrées).
+- Élément **positif** : le **démarrage de l'AP** fait passer le gel de
+  « rare » (1/6 avec `maxcpus=1`) à « quasi systématique » (4/4). Le code
+  fork-only exécuté à ce moment (`mp_desc.c` : `lapic_disable()`, attente
+  `pit_udelay(1000)` IT coupées, `lapic_enable()`) est le **suspect n°1**.
 - **Aucun défaut isolé et démontrable** n'a été identifié ⇒ **pas de patch
   noyau** (un correctif non prouvé casserait la référence `-smp 1`
   fonctionnelle).
-- **Contournement immédiat** (overlay jetable uniquement) : lancer `-smp 2`
-  avec un IOAPIC émulé par QEMU — validé (boot complet + clavier) :
-  ```sh
-  MACHINE=q35,kernel-irqchip=split SMP=2 OVL=… MON=… SSH_PORT=2322 \
-    ./run-hurd64-smp.sh /home/ben/hurd-fork/vm/hurd-dev.qcow2
-  ```
+- **Contournements validés** (overlay jetable uniquement), par ordre de
+  fiabilité :
+  1. `-smp 1` (référence fonctionnelle, clavier OK) ;
+  2. `-smp 2` avec un IOAPIC émulé par QEMU — boot complet + clavier :
+     ```sh
+     MACHINE=q35,kernel-irqchip=split SMP=2 OVL=… MON=… SSH_PORT=2322 \
+       ./run-hurd64-smp.sh /home/ben/hurd-fork/vm/hurd-dev.qcow2
+     ```
+  3. `-smp 2` **+ `maxcpus=1`** (option fork) : boot 5/6 — utile mais **non
+     garanti** (le 2ᵉ vCPU reste visible du noyau).
   (ne jamais modifier `hurd-dev.qcow2` ; le défaut `MACHINE=q35` reste
   inchangé.)
 
@@ -405,17 +522,57 @@ MACHINE=q35,kernel-irqchip=split SMP=2 OVL=… MON=/tmp/hurd-split-mon \
 #   set {unsigned int}0xffffffffca927000 = 1 ; x/1xw 0xffffffffca927010
 ```
 
+Manches répétées (3e passe) : copier l'overlay **avant chaque manche**
+(`cp ovl-stock-smp2.qcow2 ovl-trial-N.qcow2`), lancer la VM, attendre ~85 s,
+puis classer d'après l'écran lu par `xp/16384cb 0xb8000` :
+**WEDGE** si la dernière ligne est `ahcisata0: 64-bit DMA`, **BOOT** si
+`login:` apparaît. Injecter `maxcpus=1` **sans toucher à GRUB** : lancer avec
+`GDB=1 STOP=1`, `hbreak smp_init`, puis écrire dans `kernel_cmdline`
+(`0xffffffffc17ff000`, page fraîche de `init_alloc_aligned`) la chaîne
+`root=part:2:device:wd0 maxcpus=1\0`, `delete` le point d'arrêt et `detach` —
+**toujours vérifier `info status` = `running`** ensuite (voir piège
+méthodologique ci-dessus). Confirmation : `smp_info = {num_cpus = 1}`,
+`machine_slot[1].is_cpu = 0`, sachant que `start_other_cpus()` sort
+immédiatement (`mp_desc.c:284`, `if (ncpus == 1) return;`).
+
+**Identité des noyaux** (vérifiée dans le guest, `uname` + `md5sum`) :
+
+- **stock** : `/boot/gnumach-1.8-amd64-up.gz` de l'image de base
+  (`hurd-dev.qcow2`), **236 555 octets**, md5
+  `58334befca2eaa36dc7358cc996ecffe` — c'est aussi `/boot/gnumach-stock.gz`
+  dans l'overlay fork. `uname` = `GNU-Mach 1.8+git20260224-up-amd64`,
+  `nproc` = **1**.
+- **fork** : `/boot/gnumach-1.8-amd64-up.gz` de `ovl-stock-smp2.qcow2`,
+  **1 611 776 octets**, md5 `c8dfe4716a9216d6bfcc2047989cdf7`.
+
+⇒ un overlay **`FRESH=1`** (simple copie de la base) démarre le **stock**, pas
+le fork : la recette fork **exige** `OVL=ovl-stock-smp2.qcow2 FRESH=0` (ou une
+copie de cet overlay, cf. manches ci-dessus).
+
 ### Prochaines expériences (précises)
 
-1. Instrumenter `ioapic_toggle_entry` / `unmask_irq` / `ioapic_irq_eoi`
+1. ~~Trancher « build SMP » vs « AP démarré »~~ **FAIT (3e passe)** : `-smp 1`
+   ne gèle jamais ; `-smp 2` gèle 4/4 ; `-smp 2` + `maxcpus=1` (AP non démarré,
+   `smp_info.num_cpus = 1` vérifié par gdb) boote 5/6. ⇒ **déclencheur =
+   démarrage de l'AP**, avec une **composante de course** résiduelle (1/6).
+2. ~~Comparer les tables PIC/IOAPIC dans les 3 cas~~ **FAIT (3e passe)** :
+   pins actifs identiques ; seule différence = **pin 16 (AHCI) encore masqué
+   au gel** ⇒ blocage **avant** `pci_intr_establish`.
+3. **Priorité** — piste `pit_udelay(1000)` de `mp_desc.c` : le seul code
+   fork-only exécuté uniquement quand l'AP démarre (canal 2 PIT / port `0x61`,
+   IT coupées par `splhigh()`). Expérience : patcher à chaud via gdb le `call
+   pit_udelay` de la boucle (NOP) et voir si `-smp 2` boote ; sinon, remplacer
+   `pit_udelay(1000)` par un `cpu_pause()` borné (spin sans toucher au PIT,
+   comme l'upstream) et comparer le taux de gel (4/4 attendu → ?).
+4. Instrumenter `ioapic_toggle_entry` / `unmask_irq` / `ioapic_irq_eoi`
    (ring buffer `pin`/`mask`/`entry.lo`/`cpu`) et lire au blocage via gdb →
    détecter un read-modify-write corrompu.
-2. Trancher « build SMP » vs « AP démarré » : même noyau, `kernel-irqchip=on`,
-   avec `nosmp`/`maxcpus=1` (l'AP ne démarre pas) vs sans.
-3. Tester la piste `pit_udelay(1000)` de `mp_desc.c` (canal 2 PIT / port 0x61)
-   en la retirant de la boucle d'attente AP.
-4. Comparer le routage PIC→GSI `KVM_SET_GSI_ROUTING` côté hôte entre noyau
+5. Comparer le routage PIC→GSI `KVM_SET_GSI_ROUTING` côté hôte entre noyau
    stock (OK) et fork (KO) — nécessite les symboles du noyau stock.
+6. Côté utilisateur : instrumenter la chaîne ACPI `_SB.GSIA._CRS` →
+   `pci_intr_establish` de `rumpdisk`/`pci-arbiter` (IPC `device_intr`/`memory
+   object`) pour voir *où* le fil bloque au gel (le noyau, lui, vit : IRQ
+   délivrées, horloge OK).
 
 ## Virtio stockage (`virtio-blk` / `ld_virtio`) (17/10/2026) — recette prête, non exécutable ici
 
