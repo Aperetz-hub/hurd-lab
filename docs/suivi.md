@@ -154,6 +154,32 @@ Branches locales `fork/x86_64` créées sur `mig`, `gnumach`, `hurd` (upstream =
   (`Ctrl+Alt+T`) → `sudo cp /etc/network/interfaces.eth0.bak
   /etc/network/interfaces && sudo ifup /dev/eth0 && sudo reboot`.
 
+## Reprise `-smp 2` (17/10/2026) — nouvelle observation
+
+- Le noyau par défaut de la VM dev (entrée GRUB 0) est déjà
+  `gnumach-smp-test.gz` : `-smp 1` = système fonctionnel (vioif + XFCE).
+  Le test `-smp 2` = relancer QEMU avec `-smp 2` (même disque, même noyau).
+- **Observation révisée** : en `-smp 2` le boot va **plus loin** que l'ancien
+  « figé après `ahcisata0: 64-bit DMA` » (ce texte restait juste le dernier
+  de la console avant que X prenne l'écran). Le boot **atteint xdm/X**, mais :
+  - le greeter est dessiné **incomplet** (pas de champs login) ;
+  - **le réseau ne monte pas** (ni 2222 ni 2223, `pfinet` inopérant) ;
+  - **CPU0 reste bloqué en espace utilisateur** : `RIP=0x5225ac` (`CPL=3`)
+    constant sur plusieurs échantillons → spin utilisateur (libpthread/glibc
+    ou IPC noyau), et **CPU1 est idle** (`machine_idle`, `HLT=1`).
+  ⇒ c'est un **soft-wedge** (spin), pas une boucle noyau unique. Cohérent avec
+    les races SMP amont (verrous fins manquants). Pas de quick-fix.
+- **Diagnostic sans gdb** (absent de l'hôte) : HMP
+  `cpu N` + `info registers` pour échantillonner `RIP` par CPU. Symboles :
+  `addr2line -e /home/ben/hurd-fork/patches/gnumach-smp-test -f -p 0x...`
+  (ELF avec `debug_info`). `-s` (gdbserver tcp:1234) démarre la VM *paused* →
+  faire `cont` avant d'observer.
+- **Récupération** : le guest SMP wedgé ne s'éteint pas proprement → kill QEMU
+  → le fs devient sale → au reboot, prompt maintenance → `Enter` →
+  `fsck -y /dev/wd0s2` → `Ctrl-D` (le boot reprend).
+- Rappel : `eth0`/netdde reste un secours ; en `-smp 1` la VM fonctionne
+  (réseau vioif + internet + XFCE).
+
 ## Références
 
 - FOSDEM 2026 Thibault : x86_64 essentiellement complet (MIG RPC), ~75% Debian.
