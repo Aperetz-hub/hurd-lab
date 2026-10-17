@@ -106,6 +106,36 @@ Branches locales `fork/x86_64` créées sur `mig`, `gnumach`, `hurd` (upstream =
   seulement à l'ouverture du nœud). Nettoyer les nœuds translator laissés :
   `find /` les ouvre et peut figer la VM.
 
+## pfinet sur vioif0 — test live (17/10/2026)
+
+- Translator rumpnet (`rumpnet-vioif-test`) + devnode sur `/dev/vioif0` :
+  `settrans -ac /dev/rumpnet /home/demo/rumpnet-vioif.sh` puis
+  `settrans -c /dev/vioif0 /hurd/devnode -M /dev/rumpnet vioif0`.
+  `open-dev /dev/vioif0 eth` → `device_open("eth") -> err=0` (pfinet ouvre le
+  nœud puis `device_open("eth")`, cf. `pfinet/ethernet.c`).
+- **Bascule sans redémarrer pfinet** (méthode retenue) : `ifconfig` (Hurd)
+  ajoute une interface à l'instance pfinet vivante (pfinet gère N interfaces).
+  Séquence validée (`scripts/net-switch-vioif.sh`) :
+  1. `pkill -f dhclient` (sinon dhclient remet `eth0` up) ;
+  2. `ifconfig /dev/eth0 down` ;
+  3. `ifconfig /dev/vioif0 10.0.2.15 netmask 255.255.255.0 up`.
+  Résultat : **ping gw 10.0.2.2 + DNS 10.0.2.3 OK**, et **SSH via hostfwd
+  hôte 2223 OK** (TX+RX+TCP+résolution, single-interface) → driver virtio-net
+  pleinement fonctionnel. Rollback auto (watchdog `KEEP`) validé.
+- **Limite** : la route par défaut reste liée à `eth0`. `fsysopts
+  /servers/socket/2 --gateway 10.0.2.2` → `EBUSY` (interfaces même
+  sous-réseau) ; l'accès externe (hors 10.0.2.0/24) échoue donc après bascule.
+- **Piège** : redémarrer pfinet (`settrans -g` puis `settrans -ac` sur
+  `/servers/socket/2`) **fige** : `ifconfig /dev/vioif0` bloque indéfiniment
+  (l'ancien pfinet garde le device ouvert). Ne pas redémarrer pfinet à chaud ;
+  utiliser `ifconfig` sur l'instance vivante, ou configurer vioif dès le boot.
+  Récupération : reboot (mais `/etc/init.d/networking` stop → `dhclient -r`
+  peut figer le shutdown sans réseau → `system_reset` + fsck).
+- **Intégration boot (à faire)** : démarrer rumpnet avant ifup
+  (`/etc/network/interfaces.d/` + `pre-up` créant `/dev/rumpnet` et
+  `/dev/vioif0`) et remplacer `iface /dev/eth0 inet dhcp` par
+  `iface /dev/vioif0 inet dhcp`. Garder `eth0` en secours tant que non validé.
+
 ## Références
 
 - FOSDEM 2026 Thibault : x86_64 essentiellement complet (MIG RPC), ~75% Debian.
