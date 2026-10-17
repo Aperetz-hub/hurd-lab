@@ -150,19 +150,20 @@ Branches locales `fork/x86_64` créées sur `mig`, `gnumach`, `hurd` (upstream =
   méthode `dhcp`/`fsysopts` de ifup reconstruit les options pfinet et **perd
   `--gateway`** (plus d'accès externe) en plus d'ajouter une 2e interface.
   En cas de besoin, rebooter (l'état de boot est propre) ou refixer la route.
-- Récupération si échec : console graphique X (xdm) → terminal
-  (`Ctrl+Alt+T`) → `sudo cp /etc/network/interfaces.eth0.bak
+- Récupération si échec : accès console (moniteur QEMU → `screendump`/
+  `sendkey`) → `sudo cp /etc/network/interfaces.eth0.bak
   /etc/network/interfaces && sudo ifup /dev/eth0 && sudo reboot`.
 
 ## Reprise `-smp 2` (17/10/2026) — nouvelle observation
 
 - Le noyau par défaut de la VM dev (entrée GRUB 0) est déjà
-  `gnumach-smp-test.gz` : `-smp 1` = système fonctionnel (vioif + XFCE).
-  Le test `-smp 2` = relancer QEMU avec `-smp 2` (même disque, même noyau).
+  `gnumach-smp-test.gz` : `-smp 1` = système fonctionnel (réseau vioif +
+  internet). Le test `-smp 2` = relancer QEMU avec `-smp 2` (même disque,
+  même noyau) — de préférence sur un overlay jetable (cf. README).
 - **Observation révisée** : en `-smp 2` le boot va **plus loin** que l'ancien
-  « figé après `ahcisata0: 64-bit DMA` » (ce texte restait juste le dernier
-  de la console avant que X prenne l'écran). Le boot **atteint xdm/X**, mais :
-  - le greeter est dessiné **incomplet** (pas de champs login) ;
+  « figé après `ahcisata0: 64-bit DMA` ». (Mesure faite à l'époque avec X
+  actif ; le projet est passé depuis en **console pure, sans X**.) Le boot
+  progresse jusqu'au login mais :
   - **le réseau ne monte pas** (ni 2222 ni 2223, `pfinet` inopérant) ;
   - **CPU0 reste bloqué en espace utilisateur** : `RIP=0x5225ac` (`CPL=3`)
     constant sur plusieurs échantillons → spin utilisateur (libpthread/glibc
@@ -178,7 +179,7 @@ Branches locales `fork/x86_64` créées sur `mig`, `gnumach`, `hurd` (upstream =
   → le fs devient sale → au reboot, prompt maintenance → `Enter` →
   `fsck -y /dev/wd0s2` → `Ctrl-D` (le boot reprend).
 - Rappel : `eth0`/netdde reste un secours ; en `-smp 1` la VM fonctionne
-  (réseau vioif + internet + XFCE).
+  (réseau vioif + internet).
 
 ## Option boot `maxcpus=N` / `nosmp` (17/10/2026) — échec
 
@@ -229,11 +230,45 @@ Branches locales `fork/x86_64` créées sur `mig`, `gnumach`, `hurd` (upstream =
   `virtio0: virtqueue 0 for rx0 allocation failed, error code 1` (le driver
   ne s'attache pas). En 4 Go : `virtio0: interrupting at pausebreak`,
   IRQ enregistrée, process `rumpnet-vioif-test` vivant.
-- **Reste à faire** : le câblage du devnode
-  `settrans -ac /dev/vioif0 /hurd/devnode -M /dev/rumpnet vioif0` fige la
-  machine/le réseau (à débugger). Tant que ce n'est pas réglé, la VM reste
-  fonctionnelle via `eth0`/netdde (`iface /dev/eth0 inet dhcp`).
-- XFCE **non réinstallé** après reconstruction.
+- **vioif : voir § « Résolution vioif » ci-dessous.**
+- Le projet est désormais **console pure / headless** : plus de X11/XFCE
+  (ne pas installer `xfce4`/`xdm`/Xorg).
+
+## Résolution vioif / bascule réseau (17/10/2026)
+
+- **Attache AU BOOT = OK (chemin retenu).** `/etc/network/interfaces` =
+  `scripts/interfaces.vioif` : `auto /dev/vioif0` +
+  `pre-up /usr/local/sbin/start-rumpnet.sh` ; `eth0` en secours non-auto.
+  Validé après reboot sur la VM dev : `ifconfig /dev/vioif0` = `10.0.2.15`,
+  `ping` gateway + `8.8.8.8`, DNS, HTTPS (`wget` rc=0), SSH hôte `2223`.
+  `start-rumpnet.sh` lance bien le translator `rumpnet-vioif-test` puis le
+  devnode `/dev/vioif0` (log `/tmp/start-rumpnet.log`).
+- **4 Go obligatoires.** En 2 Go le pilote ne s'attache pas :
+  `virtio0: virtqueue 0 for rx0 allocation failed, error code 1`.
+  En 4 Go : `virtio0: interrupting at pausebreak`, IRQ OK, process vivant.
+  D'où `-m 4G` dans `vm/run-*.sh`.
+- **La bascule À CHAUD rend la machine inutilisable.** Faire
+  `ifconfig /dev/eth0 down` sur un système vivant où rumpnet tourne →
+  messages noyau `irq handler [11]: release a dead delivery port …` puis
+  `still 1 unacked irqs in entry …` ; réseau mort **et** console VGA qui
+  n'écho plus ; noyau en `machine_idle` (`RIP ffffffff8100c7fd`) →
+  **reboot obligatoire**. Reproduit sur un overlay jetable.
+  ⇒ `scripts/net-switch-vioif.sh` est **verrouillé** (refus par défaut ;
+  cf. en-tête du script) : ne plus basculer à chaud, rebooter.
+- **Nuance / diagnostic corrigé** : un simple `ifconfig /dev/eth0 down`
+  *sans* rumpnet actif **ne fait pas** crasher `pfinet` — il reste vivant
+  (vérifié sur la console via `ps`). Les diagnostics « pfinet a crashé »
+  faits depuis SSH étaient biaisés : couper `eth0` coupe aussi la session
+  SSH (qui passe par `eth0`).
+- **Piste A (binaires Hurd du fork) : écartée.** L'ancien disque
+  (`hurd-dev.qcow2.fixed-corrupt`) contenait bien **tout le Hurd du fork**
+  installé (`/hurd/*` + `/lib/x86_64-gnu` en date du 2026-10-08), face au
+  paquet Debian de base `hurd 1:0.9.git20251029-7` (binaires du 2026-03-07) ;
+  `netdde` est identique sur les deux disques. Mais un test A/B (graft du
+  `pfinet` du fork + `libtrivfs/libfshelp/libports/libshouldbeinlibc` du
+  fork) **ne change rien** au blocage → ce n'est pas un bug `pfinet` mais un
+  problème de démontage IRQ à chaud. Les binaires du fork restent extraits
+  sous `/tmp/old-hurd-dir` (récupérables) mais **non nécessaires**.
 
 ## Références
 

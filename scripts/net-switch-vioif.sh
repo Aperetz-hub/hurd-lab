@@ -1,21 +1,32 @@
 #!/bin/sh
-# Bascule le reseau Hurd de /dev/eth0 (netdde e1000) vers /dev/vioif0
-# (translator rump virtio-net) sur l'instance pfinet VIVANTE (aucun
-# redemarrage de pfinet : cf. docs/suivi.md, "redemarrer pfinet fige").
+# ============================================================================
+#  DECONSEILLE - NE PLUS UTILISER (17/10/2026)  -> DESACTIVE par defaut.
 #
-# Prerequis (rumpnet deja demarre, sinon le faire) :
-#   settrans -ac /dev/rumpnet /chemin/vers/rumpnet-vioif.sh
-#   settrans -c  /dev/vioif0 /hurd/devnode -M /dev/rumpnet vioif0
+#  Bascule A CHAUD de /dev/eth0 (netdde/e1000) vers /dev/vioif0 (rumpnet) sur
+#  une instance pfinet VIVANTE.  Tests sur la VM dev reconstruite : cette
+#  bascule rend la machine INUTILISABLE --
+#     irq handler [11]: release a dead delivery port ...
+#     irq handler [11]: still 1 unacked irqs in entry ...
+#  -> reseau mort, console VGA qui n'echo plus, reboot obligatoire.
+#  (Ce n'est PAS un crash de pfinet : cf. docs/suivi.md § "Resolution vioif".)
 #
-# A lancer EN DETACHE (sudo) : la bascule coupe eth0, la session SSH via le
-# port 2222 tombe. Le watchdog restaure eth0 si le drapeau KEEP n'est pas
-# pose avant WAIT secondes (permet de valider vioif via le hostfwd 2223).
+#  METHODE SUPPORTEE : attache AU BOOT via /etc/network/interfaces
+#  (scripts/interfaces.vioif : `auto /dev/vioif0` + pre-up start-rumpnet.sh),
+#  puis reboot.  Pour revenir a eth0 :
+#     cp /etc/network/interfaces.eth0.bak /etc/network/interfaces && reboot
 #
-#   echo demo | sudo -S -v
-#   nohup sudo KEEP=/tmp/keep-vioif WAIT=120 ./net-switch-vioif.sh &
-#
-# Variables : LOG KEEP WAIT IP MASK GW
+#  Conserve pour reference : refuse de s'executer sauf FORCE=1.
+# ============================================================================
 set -u
+: "${FORCE:=0}"
+if [ "$FORCE" != "1" ]; then
+	echo "net-switch-vioif.sh: DESACTIVE (la bascule a chaud fige la machine)." >&2
+	echo "  -> attache au boot : /etc/network/interfaces = scripts/interfaces.vioif, puis reboot." >&2
+	echo "  -> pour forcer malgre tout : FORCE=1 $0" >&2
+	exit 2
+fi
+
+# --- Ancienne logique (a chaud), conservee telle quelle --------------------
 LOG=${LOG:-/tmp/net-switch-vioif.log}
 KEEP=${KEEP:-/tmp/keep-vioif}
 WAIT=${WAIT:-120}
