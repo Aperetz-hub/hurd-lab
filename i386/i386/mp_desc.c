@@ -302,16 +302,25 @@ start_other_cpus(void)
 
 	splhigh();
 
-	/* Disable IOAPIC interrupts (IPIs not affected).
-	 * Clearing this flag is similar to masking all
-	 * IOAPIC interrupts individually.
+	/* Do NOT disable the BSP's local APIC here.
 	 *
-	 * This is done to prevent IOAPIC interrupts from
-	 * interfering with SMP startup. splhigh() may be enough for BSP,
-	 * but I'm not sure.  We cannot control the lapic
-	 * on APs because we don't have execution on them yet.
+	 * splhigh() already blocks interrupts on the BSP for the whole AP
+	 * bring-up window, so masking the LAPIC buys nothing on the BSP
+	 * either.  It actively breaks it: clearing LAPIC_ENABLE makes the
+	 * BSP unable to accept *any* IOAPIC interrupt, so the 100 Hz PIT
+	 * edges that arrive while the APs come up are consumed without ever
+	 * being delivered, and the master CPU never gets a clock tick again.
+	 * Since clock_interrupt() only advances time, the timeout list and
+	 * last_hpc_read on master_cpu, the whole system clock then freezes:
+	 * no time, no timeout, no preemption, and rumpdisk spins forever in
+	 * its AHCI attach (measured: uptime stuck at 0.120 s, elapsed_ticks
+	 * at 12, while the guest is otherwise alive).  The wedge only clears
+	 * on a vCPU re-entry that forces the pending interrupt to be
+	 * re-injected (a gdb attach/detach, a vCPU pause), which is why a
+	 * pause appeared to "unfreeze" the guest.
+	 *
+	 * APs are left alone anyway: we have no execution on them yet.
 	 */
-	lapic_disable();
 
 	/* This is set once for all APs to use */
 	pmap_make_temporary_mapping();
@@ -355,8 +364,5 @@ start_other_cpus(void)
 	for (cpu = 1; cpu < ncpus; cpu++) {
 		interrupt_processor(cpu);
 	}
-
-	/* Re-enable IOAPIC interrupts as per setup */
-	lapic_enable();
 }
 #endif	/* NCPUS > 1 */
