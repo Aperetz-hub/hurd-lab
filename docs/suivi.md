@@ -180,6 +180,61 @@ Branches locales `fork/x86_64` créées sur `mig`, `gnumach`, `hurd` (upstream =
 - Rappel : `eth0`/netdde reste un secours ; en `-smp 1` la VM fonctionne
   (réseau vioif + internet + XFCE).
 
+## Option boot `maxcpus=N` / `nosmp` (17/10/2026) — échec
+
+- But : pouvoir démarrer un noyau compilé `--enable-ncpus=2` sur une machine
+  `-smp 2` en n'utilisant que le BSP (contournement des races SMP amont).
+- Implémentation : `i386/i386/smp.c::smp_data_init()` plafonne
+  `apic_get_numcpus()` d'après `kernel_cmdline` (`maxcpus=N`, `nosmp`).
+  Commit `a4237652` (branche `fork/x86_64`).
+- **Résultat : ne marche pas.** Le noyau plafonné *ainsi que* le noyau
+  d'origine échouent en `-smp 2`. Symptômes non déterministes observés :
+  panic `EX_NOT_EXECUTABLE` au bootstrap, blocage aux scripts de boot,
+  `machine_idle` après « hurd server bootstrap ». L'AP est bien arrêté
+  (CPU1 `HLT=1`), donc ce n'est pas un simple problème de démarrage d'AP.
+  ⇒ l'option est un cul-de-sac ; `-smp 2` reste inutilisable.
+
+## INCIDENT (17/10/2026) — perte du disque de la VM dev
+
+- **Cause racine** : ré-extraction de `vm/debian-hurd-amd64-20260314.img`
+  *alors que* `hurd-dev.qcow2` (overlay dont cette image est le **backing
+  file**) était utilisé. Le tarball ré-extrait contenait une version
+  différente → le backing a changé → vue disque incohérente → corruption fs.
+- **Symptôme** : panic au bootstrap
+  `user_bootstrap: Cannot load user executable module (error code 6000): exec`
+  = `EX_NOT_EXECUTABLE`. En cause : `/lib/x86_64-gnu/ld-x86-64.so.1`
+  (le module `exec` de GRUB est en fait `ld.so`) corrompu — son contenu était
+  devenu une archive `ar`.
+- **Tentatives** : `e2fsck -y` (2 passes, fs redevenu « clean ») +
+  restauration de `ld.so` depuis l'image pristine → plus de panic, mais
+  blocage définitif au bootstrap (serveur ext2fs/exec ne démarre pas).
+  ⇒ disque irrécupérable. Conservé : `hurd-dev.qcow2.corrupt`,
+  `hurd-dev.qcow2.fixed-corrupt`.
+- **Leçon** : ne jamais re-extraire/écraser l'image de base d'un overlay
+  pendant que l'overlay existe ; préférer des copies **autonomes**
+  (`qemu-img convert`) sans backing file.
+
+## Reconstruction de la VM dev (17/10/2026)
+
+- Disque neuf **autonome** : `qemu-img convert debian-hurd-amd64-20260314.img
+  → hurd-dev.qcow2` (plus de backing file).
+- Réseau : `netdde`/e1000 (`10.0.2.15`), SSH par **clé** (port 2222) ;
+  `demo` (dans `sudo`), mot de passe `demo`. `apt` OK.
+- Artefacts rump récupérés depuis le disque corrompu (debugfs) :
+  binaire `.../rumpnet/rumpnet-vioif-test`, libs `/usr/lib/librump*.so*`
+  (114 fichiers), scripts. **glibc** doit être ≥ **2.43** (les binaires rump
+  exigent `GLIBC_2.43`) → `libc0.3` mis à jour `2.42 → 2.43-7`.
+- **vioif** : le driver démarre et détecte `vioif0`
+  (MAC `52:54:00:12:34:58`) **seulement avec 4 Go de RAM**. En 2 Go :
+  `virtio0: virtqueue 0 for rx0 allocation failed, error code 1` (le driver
+  ne s'attache pas). En 4 Go : `virtio0: interrupting at pausebreak`,
+  IRQ enregistrée, process `rumpnet-vioif-test` vivant.
+- **Reste à faire** : le câblage du devnode
+  `settrans -ac /dev/vioif0 /hurd/devnode -M /dev/rumpnet vioif0` fige la
+  machine/le réseau (à débugger). Tant que ce n'est pas réglé, la VM reste
+  fonctionnelle via `eth0`/netdde (`iface /dev/eth0 inet dhcp`).
+- XFCE **non réinstallé** après reconstruction.
+
 ## Références
 
 - FOSDEM 2026 Thibault : x86_64 essentiellement complet (MIG RPC), ~75% Debian.

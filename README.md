@@ -10,18 +10,28 @@ Fork expérimental de GNU/Hurd (64-bit) avec deux objectifs :
 
 ## État (17/10/2026)
 
-- **virtio-net (`vioif`) : fonctionnel et intégré au boot.**
+> **Reconstruction en cours.** Le disque de la VM dev a été corrompu le
+> 17/10 (voir `docs/suivi.md` § *INCIDENT* : ré-extraction de l'image de base
+> d'un overlay alors qu'il l'utilisait). Une VM neuve a été reconstruite depuis
+> l'image pristine ; `eth0`/netdde + SSH refonctionnent, mais XFCE n'est
+> **pas encore** réinstallé et l'intégration vioif est en cours de revalidation.
+
+- **virtio-net (`vioif`)** : le pilote rump compile et s'attache au device.
   - Le crash `curlwp`/`%gs` est corrigé (interposition de `<machine/cpu.h>`
     rump + `-D_RUMPKERNEL`, voir `patches/build/`).
-  - La VM boote sur `/dev/vioif0` (MAC `52:54:00:12:34:58`) : ping gateway et
-    `8.8.8.8`, DNS, HTTPS (`wget`) et SSH (hostfwd hôte `2223`) OK.
-  - Intégration : `scripts/start-rumpnet.sh` (démarre le translator rumpnet +
-    le devnode `/dev/vioif0`, appelé par `pre-up`) et
-    `scripts/interfaces.vioif`. `eth0`/netdde conservé en secours.
-- **SMP : toujours non fonctionnel.** `-smp 1` = système complet (réseau vioif
-  + XFCE). `-smp 2` atteint X/xdm mais le greeter est incomplet, le réseau ne
-  monte pas, et un processus **userspace spin** (CPU0 en `CPL=3`), CPU1 idle
-  → **soft-wedge** (races SMP amont, verrous fins manquants). Pas de quick-fix.
+  - Sur la VM reconstruite, le translator démarre et voit `vioif0`
+    (MAC `52:54:00:12:34:58`) **uniquement avec 4 Go de RAM** ; en 2 Go :
+    `virtio0: virtqueue 0 for rx0 allocation failed, error code 1`.
+  - Intégration boot : `scripts/start-rumpnet.sh` + `scripts/interfaces.vioif`
+    (+ `scripts/net-switch-vioif.sh`). **En cours de revalidation** : le
+    câblage du devnode `/dev/vioif0` (`devnode -M /dev/rumpnet vioif0`) fige
+    encore la machine. `eth0`/netdde sert de secours.
+  - `glibc ≥ 2.43` requis par les binaires rump (l'image pristine est en 2.42).
+- **SMP : non fonctionnel.** `-smp 1` = système complet. `-smp 2` = échecs non
+  déterministes (soft-wedge *userspace*, panic `EX_NOT_EXECUTABLE` au
+  bootstrap, `machine_idle`). L'option de boot `maxcpus=N`/`nosmp` (commit
+  `a4237652`, branche `fork/x86_64`) **ne contourne pas** le problème
+  → cul-de-sac.
 
 Détails, méthodes de test et diagnostics : `docs/suivi.md` et les messages de
 commit.
