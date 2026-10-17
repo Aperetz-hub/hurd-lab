@@ -28,11 +28,14 @@ Fork expérimental de GNU/Hurd (64-bit) avec deux objectifs :
     fige la machine (IRQ 11 non acquittée, réseau + console morts, reboot
     requis) → `scripts/net-switch-vioif.sh` est **verrouillé**.
   - `glibc ≥ 2.43` requis par les binaires rump.
-- **SMP : non fonctionnel.** `-smp 1` = système complet. `-smp 2` = échecs non
-  déterministes (soft-wedge *userspace*, panic `EX_NOT_EXECUTABLE` au
-  bootstrap, `machine_idle`). L'option de boot `maxcpus=N`/`nosmp` (commit
-  `a4237652`, branche `fork/x86_64`) **ne contourne pas** le problème
-  → cul-de-sac.
+- **SMP : non fonctionnel.** `-smp 1` = système complet. `-smp 2` = le boot se
+  bloque dans l'attache AHCI du traducteur **`rumpdisk`**
+  (`ahcisata0: 64-bit DMA`), reproductible sur overlay neuf (autopsie GDB :
+  CPU0 = IT horloge 100 Hz, CPU1 `machine_idle`, aucune tâche utilisateur
+  runnable → `rumpdisk` bloqué dans le noyau ; voir `docs/suivi.md`
+  § *Autopsie du gel `-smp 2`*). L'option de boot `maxcpus=N`/`nosmp` (commit
+  `a4237652`, branche `fork/x86_64`) reste **utile pour forcer le mono-CPU sur
+  une VM multi-cœurs**, mais **ne corrige pas** les races SMP.
 
 > **Historique.** Le disque de la VM dev a été corrompu le 17/10
 > (ré-extraction de l'image de base d'un overlay en service) puis reconstruit
@@ -76,7 +79,10 @@ qemu-img convert -O qcow2 debian-hurd-amd64-*.img hurd-dev.qcow2
 # 2) lancer (console pure / headless, -m 4G, ssh localhost:2222) :
 ./vm/run-hurd64.sh            # VM dev (disque autonome hurd-dev.qcow2)
 ./vm/run-hurd64-smp.sh        # test -smp 2 sur overlay jetable — attendu : échec
+                              #   GDB=1 ajoute -gdb tcp::1234 ; STOP=1 ajoute -S ;
+                              #   FRESH=0 réutilise l'overlay (kernel déjà installé)
 ./vm/run-hurd64-vioif.sh      # test vioif (bascule réseau) sur overlay jetable
+                              #   BLK=1 attache un disque virtio-blk secondaire (vd0)
 ```
 
 > **Sécurité disque.** Ne jamais démarrer l'image de base `debian-hurd-amd64-*.img`
