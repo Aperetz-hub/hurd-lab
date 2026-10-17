@@ -6,3 +6,7 @@
 *.tar.gz
 *.ppm
 *.out
+
+# Cargo build output for the experimental Rust / RISC-V workspaces.
+target/
+**/target/

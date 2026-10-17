@@ -1,0 +1,18 @@
+[package]
+name = "hurd-riscv64-boot"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+description = "Bare-metal RISC-V (rv64gc) boot skeleton for GNU/Hurd on the QEMU virt machine"
+license = "GPL-3.0-or-later"
+publish = false
+
+# A kernel image is a freestanding binary, not a library: a single bin target
+# keeps `cargo build` producing exactly one ELF.
+[[bin]]
+name = "hurd-riscv64-boot"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]

@@ -1,0 +1,18 @@
+[package]
+name = "hurd-mig-sys"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "no_std FFI bindings for the GNU Mach / MIG interface used by Hurd translators"
+links = "mach"          # at most one build script may claim a given C library
+build = "build.rs"
+
+[features]
+default = []
+# Exposes allocation-failure hooks so a translator-shaped component can plug
+# in Hurd's allocator instead of requiring the Rust global allocator.
+alloc-support = []
+
+[dependencies]

@@ -1,0 +1,20 @@
+# Cargo configuration for the Rust / Mach-MIG work.
+#
+# The POC targets x86_64-unknown-linux-gnu on purpose: it runs on the *host*
+# toolchain, not inside the Hurd guest yet. See README.md for how the same
+# crate is later cross-compiled for the guest.
+
+[build]
+# Uncomment to cross-compile the POC for the Hurd guest:
+# target = "x86_64-unknown-hurd"
+
+[target.x86_64-unknown-linux-gnu]
+# Hurd's Mach headers and MIG stubs are built for the host layout on both
+# sides, so this matches what bindgen sees. Keep it in sync with the C side
+# (-m64) or every struct offset in the generated bindings will be wrong.
+rustflags = ["-C", "target-feature=+soft-float"]
+
+[unstable]
+# Needed by `cargo build -Z build-std=core,alloc` (see README.md).
+build-std = ["core", "alloc", "compiler_builtins"]
+build-std-features = ["compiler-builtins-mem"]

@@ -1,0 +1,15 @@
+[package]
+name = "hurd-mig-example"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Proof of concept: a no_std + alloc Hurd component talking to Mach/MIG"
+
+[dependencies]
+hurd-mig-sys = { path = "../hurd-mig-sys", features = ["alloc-support"] }
+
+# Deliberately NOT a dependency: this crate is #![no_std]. `alloc` is part of
+# the toolchain, and `extern crate alloc;` below is enough to reach it.
+[target.'cfg()'.dependencies]
