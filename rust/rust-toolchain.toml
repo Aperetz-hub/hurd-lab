@@ -1,9 +1,23 @@
 [toolchain]
-# Nightly because the documented workflow rebuilds `core`/`alloc` from source
-# (-Z build-std). If you only want the uncommented POC to build, a recent
-# *stable* toolchain works too: `core` and `alloc` are both shipped prebuilt for
-# x86_64-unknown-linux-gnu, which is the target used for the Hurd POC.
-channel = "nightly"
-components = ["rust-src", "rustfmt", "clippy"]
+# STABLE on purpose.
+#
+# Both workspaces compile and test on a stock stable toolchain: `core` is
+# prebuilt for `riscv64gc-unknown-none-elf`, and `core` + `alloc` are prebuilt
+# for `x86_64-unknown-linux-gnu`. Pinning nightly here would force a ~150 MB
+# download on every contributor's machine for no benefit.
+#
+# Nightly is needed for exactly one thing: rebuilding the standard library with
+# `-Z build-std`, which the RISC-V workspace needs at the milestone where an
+# allocator arrives (there is no prebuilt `alloc` for a `none` target). That is
+# opt-in and is NOT put in .cargo/config.toml, because listing `[unstable]
+# build-std` there turns it on *by default* for every build in the workspace.
+# Use it explicitly instead:
+#
+#     cargo +nightly build -Z build-std=core,alloc,compiler_builtins \
+#          -Z build-std-features=compiler-builtins-mem
+#
+# (It also needs the `rust-src` component: `rustup component add rust-src`.)
+channel = "stable"
+components = ["rustfmt", "clippy"]
 targets = ["x86_64-unknown-linux-gnu"]
 profile = "minimal"

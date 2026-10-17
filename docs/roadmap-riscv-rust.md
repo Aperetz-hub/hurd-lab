@@ -92,27 +92,49 @@ cargo install bindgen-cli      # interactive workflow only
   the `bindgen` *library*, so the build cannot break because a globally
   installed CLI is a different version. Install the CLI only for the
   edit-regenerate loop.
-- Both `rust-toolchain.toml` files pin nightly because each workspace declares
-  an `[unstable] build-std` section. Everything in both workspaces also builds
-  on a recent **stable** toolchain (`core` is prebuilt for
-  `riscv64gc-unknown-none-elf`; `core` and `alloc` are prebuilt for
-  `x86_64-unknown-linux-gnu`), so a stable-only CI box is fine for
-  `cargo check`.
+- Both `rust-toolchain.toml` files pin **stable**: `core` is prebuilt for
+  `riscv64gc-unknown-none-elf`, and `core` + `alloc` are prebuilt for
+  `x86_64-unknown-linux-gnu`, so nightly would be a ~150 MB download per
+  contributor for nothing. Nightly is needed only to rebuild the standard
+  library (§5.3), which is opt-in per command.
 
 ### 2.3 Current state of the reference host
 
-Verified on 18/10/2026 — this is why the scaffolding ships unbuilt:
+Verified on 18/10/2026, after installing the Rust side of §2.2:
 
-```
-ABSENT rustc, cargo, rustup, bindgen, clang, llvm-config
-ABSENT qemu-system-riscv64, riscv64-linux-gnu-gcc
-Debian GNU/Linux 13 (trixie), x86_64
+| tool | state |
+|---|---|
+| `rustc` / `cargo` | **installed** (stable 1.99.1, plus nightly for `-Z build-std`) |
+| `clang` / `libclang` | **installed** (LLVM 19) — bindgen works |
+| `rustup` | **installed** |
+| `qemu-system-riscv64` | absent |
+| `riscv64-linux-gnu-gcc` | absent |
+| OS | Debian GNU/Linux 13 (trixie), x86_64 |
+
+The **Rust track is therefore validated**: `cargo check`, `cargo clippy`,
+`cargo fmt --check`, `cargo test` (32 tests) and `cargo run` all pass, and the
+generated bindings come from `hurd-mig-sys/include/mach_ffi.h`'s **fallback**
+branch — `libhurd-dev` is still not installed, so the struct layouts are a
+stand-in. See `rust/README.md`.
+
+The **RISC-V track is still unbuilt**: without `qemu-system-riscv64` and
+`riscv64-linux-gnu-gcc` the `riscv64/` skeleton has never been compiled, so every
+"expected output" in `riscv64/README.md` remains a design intent. First action
+for whoever picks that up: install §2.1, then `riscv64/make check` followed by
+`make build`.
+
+### 2.4 `LIBCLANG_PATH`
+
+bindgen loads `libclang` dynamically. If it is installed outside the default
+search path (Debian puts it in `/usr/lib/llvm-19/lib` and does not register it
+with `ldconfig`), point bindgen at it explicitly:
+
+```sh
+export LIBCLANG_PATH=/usr/lib/llvm-19/lib
 ```
 
-Every "expected output" in `riscv64/README.md` and every claim about generated
-bindings is therefore a **design intent**, not a verified result. First action
-for whoever picks this up: install §2.1 + §2.2, then run `riscv64/make check`
-followed by `make build`.
+Without it the build fails at the `generate()` call with a libclang loading
+error that does not obviously point at the environment.
 
 ---
 
@@ -189,7 +211,7 @@ Every milestone is validated against the host, not against a userland:
 
 ## 4. Rust path
 
-### 4.1 The two invariants
+### 4.1 The invariants
 
 **(a) The FFI layer never pulls in `std`.** `hurd-mig-sys` is `#![no_std]`, and
 the build script forces bindgen to agree:
@@ -212,7 +234,28 @@ authoritative layouts. The build prints a `cargo:warning` naming the path taken;
 *"building against the self-contained fallback"* means the offsets are
 unverified.
 
-### 4.2 `no_std` + `alloc` on Hurd
+### 4.2 What the example component already does
+
+`rust/crates/hurd-mig-example` is no longer a placeholder; the pieces are:
+
+- `message.rs` — `mach_msg_header_t` (24 bytes on LP64, asserted at compile
+  time) plus the validation that must happen *before* a buffer reaches
+  `mach_msg()`: length, declared-size agreement, word rounding, non-zero
+  remote port, exact scalar width.
+- `protocol.rs` — ids in the MIG layout (`subsystem | kind << 8 | detail`), with
+  requests and replies provably disjoint.
+- `transport.rs` — a `Transport` trait with an in-process `Loopback` and, behind
+  the `mach` feature, a real `Mach` transport whose receive right is owned by an
+  RAII wrapper.
+- `server.rs` — a total dispatcher: every input yields a reply or an error
+  reply, and a request that is itself a reply is refused rather than answered.
+
+The value of building it this way is that the safety-relevant part
+(`message.rs`) is exercised by 32 host tests with no VM and no QEMU, which is the
+cheapest possible regression net for a component that will eventually take
+hostile client input.
+
+### 4.3 `no_std` + `alloc` on Hurd
 
 `#![no_std]` does not mean "no heap". `extern crate alloc;` plus a
 `#[global_allocator]` is enough, and on Hurd that is the *correct* design
@@ -244,7 +287,7 @@ Two rules that are easy to get wrong, and that the `alloc` module in
   correct but turns every `Vec` growth into two copies — which matters when the
   component sits on the IPC hot path.
 
-### 4.3 MIG `.defs` pipeline
+### 4.4 MIG `.defs` pipeline
 
 `foo.defs` is a `migcom` input language, not C, so bindgen cannot read it. The
 supported chain is:
@@ -274,17 +317,18 @@ Recipe:
    host with the real headers before trusting an offset, and keep the C-side ABI
    flags and `rust/.cargo/config.toml` in the same commit.
 
-### 4.4 Where the safe surface should grow
+### 4.5 Where the safe surface should grow
 
 The generated layer stays untouched. Safety is added *above* it, in
 dependency order, because each step only needs the previous one to be correct:
 
-1. `error_string()` and `is_ok()` — already done. Removes the single most
-   common source of misuse (comparing `kern_return_t` against a bare integer).
-2. An owned right wrapper around `mach_port_t` with `Drop` deallocating, so a
-   right cannot leak on an early return.
-3. A checked `Message` type over `mach_msg_header_t` with a fixed inline buffer,
-   so message sizes are validated before the kernel sees them.
+1. `error_string()` and `is_ok()` — **done** (`hurd-mig-sys`, behind `runtime`).
+2. A checked `Message` type over `mach_msg_header_t` — **done**
+   (`message.rs`), currently with a `Vec` body rather than a fixed inline
+   buffer.
+3. An owned right wrapper around `mach_port_t` with `Drop` deallocating —
+   **written** (`transport::mach::OwnedReceiveRight`) but only reachable behind
+   the `mach` feature, so it is not yet exercised by a test.
 4. Only then, subsystem-specific calls.
 
 Each layer is where a `#![forbid(unsafe_code)]` boundary can be drawn.
@@ -331,12 +375,20 @@ Guest builds need three things that are easy to miss:
 
 ### 5.3 Standard library rebuilding (`-Z build-std`)
 
-Both workspaces declare:
+**Neither workspace declares `[unstable] build-std`**, and that is deliberate:
+listing it in `.cargo/config.toml` turns standard-library rebuilding on *by
+default* for every build, and cargo then builds its own `core` on top of the
+prebuilt one:
 
-```toml
-[unstable]
-build-std = ["core", "alloc", "compiler_builtins"]
-build-std-features = ["compiler-builtins-mem"]
+```
+error[E0152]: duplicate lang item in crate `core` (which `std` depends on): `sized`
+```
+
+Both workspaces therefore pin **stable**, and the flag is opt-in and explicit:
+
+```sh
+cargo +nightly build -Z build-std=core,alloc,compiler_builtins \
+     -Z build-std-features=compiler-builtins-mem
 ```
 
 | when | command | why |
@@ -378,13 +430,22 @@ milestone actually needs `alloc`.
    Mach-shaped core plus a single Rust server and accept that most of the system
    is missing. The second is far cheaper and is the recommended default.
 2. **Rust for existing translators.** The interesting question is not "can Rust
-   call Mach" but "is a `#![no_std]` translator-compatible component cheaper to
-   make memory-safe than to audit". That is a measurement, not a slogan; a
-   realistic target is one real subsystem (file system or pager) ported and
-   compared.
+   call Mach" — it can, and `hurd-mig-example` does — but "is a `#![no_std]`
+   translator-compatible component cheaper to make memory-safe than to audit".
+   That is a measurement, not a slogan; the realistic next step is porting one
+   real subsystem (file system or pager) and comparing. The open question is
+   also *where the safe boundary goes*: `message.rs` shows the shape (validate
+   before the syscall, never after), but a real MIG subsystem has descriptor
+   and trailer words this protocol does not have yet.
 3. **Whether `-Z build-std` becomes a hard dependency.** If milestone 4 needs it
    for `alloc`, nightly becomes mandatory for the RISC-V target, and the
    `rust-toolchain.toml` pin is load-bearing rather than optional.
-4. **Toolchain availability.** Nothing has been compiled. `riscv64/make check`
-   is the gate; until it passes on a host with §2.1 + §2.2 installed, the
-   expected outputs in `riscv64/README.md` remain unverified.
+4. **Toolchain availability (RISC-V).** The Rust track is validated; the
+   RISC-V track is not: `qemu-system-riscv64` and `riscv64-linux-gnu-gcc` are
+   still absent, so `riscv64/make check` is the gate and the expected outputs in
+   `riscv64/README.md` remain unverified.
+5. **Which Mach headers the bindings come from.** `cargo build` currently uses
+   the self-contained fallback in `mach_ffi.h`, so the struct layouts in the
+   committed build are a stand-in. Installing `libhurd-dev` (or pointing
+   `HURD_SRC` at a checkout) and re-running the tests is the way to confirm
+   them; bindgen's generated layout assertions will catch any drift.

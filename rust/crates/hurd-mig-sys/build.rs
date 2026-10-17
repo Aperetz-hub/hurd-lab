@@ -166,19 +166,16 @@ fn main() {
         .use_core()
         // The type used for c_char/c_int/... must exist in core, not std.
         .ctypes_prefix("::core::ffi")
-        // The generated file is a module body, not its own crate root.
-        .raw_line("#![allow(non_upper_case_globals)]")
-        .raw_line("#![allow(non_camel_case_types)]")
-        .raw_line("#![allow(non_snake_case)]")
-        .raw_line("#![allow(dead_code)]")
-        .raw_line("#![allow(clippy::all)]")
         // Keep the file small and diff-friendly: comments and c_naming noise
         // add nothing here, since the header is the readable source of truth.
         .generate_comments(false)
         .prepend_enum_name(false)
-        // Mach is full of anonymous unions/structs; keep the MSRV low by not
-        // demanding Rust 1.49+ layout-test features.
         .layout_tests(true);
+    // NOTE: do *not* silence lints with `.raw_line("#![allow(...)]")`. The
+    // generated file is pulled in with `include!` inside `pub mod raw`, and a
+    // macro expansion cannot inject inner attributes -- the build fails with
+    // "an inner attribute is not permitted in this context". The equivalent
+    // `#[allow(..)]` lives on the module in src/lib.rs instead.
 
     let bindings = builder
         .generate()
@@ -194,6 +191,10 @@ fn main() {
         "cargo:warning=hurd-mig-sys: generated {} from {} include root(s) ({})",
         out_file.display(),
         includes.len(),
-        if have_hurd { "real Mach headers" } else { "fallback" }
+        if have_hurd {
+            "real Mach headers"
+        } else {
+            "fallback"
+        }
     );
 }

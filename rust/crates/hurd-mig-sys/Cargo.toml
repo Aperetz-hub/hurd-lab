@@ -11,8 +11,25 @@ build = "build.rs"
 
 [features]
 default = []
+
+# Gating the *convenience wrappers* (not the raw declarations) is what keeps a
+# host build linkable. `pub use raw::*` only ever *declares* the Mach symbols,
+# which costs nothing; calling them does, and on a non-Mach host there is
+# nothing to call. So a component that only needs the types leaves this off.
+runtime = []
+
 # Exposes allocation-failure hooks so a translator-shaped component can plug
 # in Hurd's allocator instead of requiring the Rust global allocator.
 alloc-support = []
+
+# bindgen is used as a library, not as a CLI: the build must not depend on a
+# globally installed `bindgen-cli` being the same version.
+#
+# Pinned to the 0.72 line on purpose. 0.73 widens its prettyplease requirement to
+# ">=0.2.7, <0.4", so the resolver can pick prettyplease 0.3.x; that combination
+# was observed segfaulting in prettyplease's own build script on this host. 0.72
+# keeps the dependency on the 0.2.x line.
+[build-dependencies]
+bindgen = "0.72"
 
 [dependencies]
