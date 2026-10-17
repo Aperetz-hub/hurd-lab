@@ -33,6 +33,38 @@
 
 #include <kern/smp.h>
 
+extern char *kernel_cmdline;
+
+/*
+ * smp_maxcpus_from_cmdline: option de ligne de commande noyau (multiboot)
+ * limitant le nombre de CPU utilises :
+ *   nosmp     -> au plus 1 CPU
+ *   maxcpus=N -> au plus N CPU (N >= 1)
+ * Retourne 0 si aucune limite n'est demandee (defaut : tous les CPU).
+ * Permet de demarrer un hote -smp N avec un seul CPU utilisable, en
+ * contournement des races SMP encore non resolues.
+ */
+static uint8_t
+smp_maxcpus_from_cmdline(void)
+{
+    const char *p;
+    unsigned n;
+
+    if (strstr(kernel_cmdline, "nosmp") != NULL)
+        return 1;
+
+    p = strstr(kernel_cmdline, "maxcpus=");
+    if (p != NULL) {
+        n = 0;
+        p += sizeof("maxcpus=") - 1;
+        while (*p >= '0' && *p <= '9')
+            n = n * 10 + (unsigned)(*p++ - '0');
+        if (n >= 1)
+            return (uint8_t) n;
+    }
+    return 0;
+}
+
 /*
  * smp_data_init: initialize smp_data structure
  * Must be called after smp_init(), once all APIC structures
@@ -41,6 +73,14 @@
 static void smp_data_init(void)
 {
     uint8_t numcpus = apic_get_numcpus();
+    uint8_t maxcpus = smp_maxcpus_from_cmdline();
+
+    if (maxcpus != 0 && maxcpus < numcpus) {
+        printf("SMP: maxcpus=%u, limite le noyau a %u CPU sur %u\n",
+               maxcpus, maxcpus, numcpus);
+        numcpus = maxcpus;
+    }
+
     smp_set_numcpus(numcpus);
 
     for(int i = 0; i < numcpus; i++){
