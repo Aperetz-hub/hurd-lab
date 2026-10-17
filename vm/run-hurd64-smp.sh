@@ -1,6 +1,6 @@
 #!/bin/bash
-# Test -smp 2 (console pure / headless) sur un OVERLAY JETABLE (backing
-# hurd-dev.qcow2) — le disque de dev n'est jamais modifie.
+# Test -smp 2 (console pure / headless) sur un OVERLAY JETABLE — le disque de
+# dev et l'overlay maitre ne sont jamais modifies.
 #   * `-smp 2` = gel dans rumpdisk (attache AHCI) avec l'IOAPIC emule par
 #     KVM (`kernel-irqchip=on`, defaut), le plus souvent mais PAS toujours
 #     (gel intermittent : course/timing). Avec `MACHINE=q35,kernel-irqchip=split`
@@ -10,6 +10,10 @@
 #     plupart du temps (5 boots / 6 mesures en 3e passe) mais pas toujours :
 #     c'est le demarrage de l'AP qui est le declencheur principal, et il reste
 #     une composante de course (cf. docs/suivi.md, 3e passe).
+#   * le noyau du FORK est installe dans l'overlay maitre (MASTER), pas dans
+#     l'image de base : un overlay neuf (FRESH=1) prend donc le maitre comme
+#     fichier de base, sinon on testerait le noyau STOCK sans s'en rendre
+#     compte (piege corrige en 4e passe, cf. docs/suivi.md).
 #
 # Variables d'environnement :
 #   SMP=2        nb de CPU QEMU (defaut 2)
@@ -18,6 +22,11 @@
 #   GDBPORT=1234 port du stub
 #   FRESH=1      recree l'overlay (defaut) ; FRESH=0 le reutilise tel quel
 #   OVL=...      chemin de l'overlay (defaut <dir base>/hurd-smp-test.qcow2)
+#   MASTER=...   overlay MAITRE (noyau fork deja installe) servant de fichier
+#                de base a un overlay neuf (defaut <dir base>/ovl-fork-master.qcow2)
+#   STOCK=1      teste explicitement l'image STOCK (backing = BASE) au lieu du
+#                maitre fork ; refuse par defaut pour ne plus tester le noyau
+#                stock par accident (piege : FRESH=1 sur hurd-dev.qcow2 = stock)
 #   MON=...      socket moniteur QEMU (defaut /tmp/hurd-smp-mon)
 #   MACHINE=...  machine QEMU (defaut q35) ; ex. q35,kernel-irqchip=split
 #
@@ -26,6 +35,8 @@ set -e
 cd "$(dirname "$0")"
 BASE=${1:-hurd-dev.qcow2}
 OVL=${OVL:-"$(dirname "$BASE")/hurd-smp-test.qcow2"}
+MASTER=${MASTER:-"$(dirname "$BASE")/ovl-fork-master.qcow2"}
+STOCK=${STOCK:-0}
 SMP=${SMP:-2}
 GDB=${GDB:-0}
 STOP=${STOP:-0}
@@ -38,8 +49,18 @@ VIOIF_PORT=${VIOIF_PORT:-2223}
 [ -f "$BASE" ] || { echo "base introuvable: $BASE"; exit 1; }
 if [ "$FRESH" = "1" ]; then
 	rm -f "$OVL"
-	qemu-img create -f qcow2 -F qcow2 -b "$BASE" "$OVL" >/dev/null
-	echo "overlay jetable recree: $OVL (backing $BASE)"
+	if [ "$STOCK" = "1" ]; then
+		qemu-img create -f qcow2 -F qcow2 -b "$BASE" "$OVL" >/dev/null
+		echo "ATTENTION: overlay STOCK recree: $OVL (backing $BASE, noyau NON fork)"
+	else
+		[ -f "$MASTER" ] || {
+			echo "maitre fork introuvable: $MASTER"
+			echo "  -> le creer une fois: cp ovl-stock-smp2.qcow2 ovl-fork-master.qcow2"
+			echo "  -> ou tester l'image STOCK en connaissance de cause: STOCK=1 $0 ..."
+			exit 1; }
+		qemu-img create -f qcow2 -F qcow2 -b "$MASTER" "$OVL" >/dev/null
+		echo "overlay fork recree: $OVL (backing maitre $MASTER)"
+	fi
 else
 	[ -f "$OVL" ] || { echo "overlay absent: $OVL"; exit 1; }
 	echo "overlay reutilise: $OVL"

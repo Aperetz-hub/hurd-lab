@@ -543,7 +543,11 @@ immédiatement (`mp_desc.c:284`, `if (ncpus == 1) return;`).
   dans l'overlay fork. `uname` = `GNU-Mach 1.8+git20260224-up-amd64`,
   `nproc` = **1**.
 - **fork** : `/boot/gnumach-1.8-amd64-up.gz` de `ovl-stock-smp2.qcow2`,
-  **1 611 776 octets**, md5 `c8dfe4716a9216d6bfcc2047989cdf7`.
+  **1 611 776 octets**, md5 `c81dfe4716a9216d6bf0c2047998cdf7` (coquille de
+  recopie corrigée en 4e passe : le md5 précédent était tronqué à 30 hex).
+  Variantes de travail (4e passe, `/tmp/gnumach-smp2.gz` = ref fork) :
+  `kA` = HEAD + marqueur `k4-A`, md5 `de1518e0517d160dcda0858e6a4057f7` ;
+  `kB` = attente AP en `cpu_pause()`, md5 `51241aed847422c7a51486d43518c52f`.
 
 ⇒ un overlay **`FRESH=1`** (simple copie de la base) démarre le **stock**, pas
 le fork : la recette fork **exige** `OVL=ovl-stock-smp2.qcow2 FRESH=0` (ou une
@@ -571,8 +575,177 @@ copie de cet overlay, cf. manches ci-dessus).
    stock (OK) et fork (KO) — nécessite les symboles du noyau stock.
 6. Côté utilisateur : instrumenter la chaîne ACPI `_SB.GSIA._CRS` →
    `pci_intr_establish` de `rumpdisk`/`pci-arbiter` (IPC `device_intr`/`memory
-   object`) pour voir *où* le fil bloque au gel (le noyau, lui, vit : IRQ
-   délivrées, horloge OK).
+   object`) pour voir *où* le fil bloque au gel (voir **4e passe** : le point
+   « le noyau, lui, vit » est **faux** — c'est précisément l'inverse, l'horloge
+   du noyau est morte, donc plus aucun timeout n'expire ; le fil qui « bloque »
+   ne fait qu'attendre un délai qui n'arrive jamais).
+
+### 4e passe : piège `FRESH` verrouillé, piste PIT écartée, **cause mesurée = horloge maître morte** (18/10/2026)
+
+Objectif de la passe : (1) verrouiller le piège `FRESH=1` (un overlay neuf
+repartait du noyau **stock** sans le dire) ; (2) tester la piste
+`pit_udelay(1000)` de l'attente de l'AP ; (3) au « gel », localiser par GDB où
+dort `rumpdisk`.
+
+#### 1) Piège `FRESH=1` verrouillé (launcher)
+
+`hurd-dev.qcow2` (image de base) contient le noyau **stock** : un overlay neuf
+(`FRESH=1`) chaîné sur la base démarrait donc le **stock**, pas le fork. Toutes
+les manches existantes utilisaient bien `OVL=… FRESH=0`, mais le piège était
+silencieux ; il est désormais impossible à déclencher par accident :
+
+- nouvelle variable `MASTER` (défaut `ovl-fork-master.qcow2`) = overlay **maître**
+  qui porte le noyau fork déjà installé ;
+- avec `FRESH=1`, le launcher **refuse (exit 1)** si le maître est absent, et crée
+  l'overlay **chaîné sur le maître** — chaîne qcow2 à 3 niveaux
+  `ovl-trial ← ovl-fork-master ← ovl-stock-smp2 ← hurd-dev.qcow2`, validée ;
+- `STOCK=1` permet (en connaissance de cause) de chaîner sur la base pour tester
+  le stock.
+
+#### 2) Piste `pit_udelay(1000)` de l'attente AP : **écartée par la mesure**
+
+Build des variantes dans `/tmp/gm` (`src` = fork HEAD `a4237652`,
+`gcc 14.2.0`, `--host=x86_64-pc-gnu --enable-ncpus=2`) :
+
+| noyau | particularité | md5 du `gnumach-…up.gz` |
+|---|---|---|
+| **A** | HEAD + marqueur `k4-A` | `de1518e0517d160dcda0858e6a4057f7` |
+| **B** | attente AP en `cpu_pause()` au lieu de `pit_udelay()` | `51241aed847422c7a51486d43518c52f` |
+
+Matrice (overlays jetables, `vgaprobe.py` en fin de manche) :
+
+| noyau | option | WEDGE | BOOT |
+|---|---|---|---|
+| fork (ref) | `-smp 2` | 3 | 0 |
+| A (`k4-A`) | `-smp 2` | 5 | 1 |
+| **B (`cpu_pause`)** | `-smp 2` | **6** | **0** |
+| B | `-smp 2 maxcpus=1` | 0 | 6 |
+
+⇒ remplacer `pit_udelay()` par `cpu_pause()` ne change **rien** (6/6 gel) : la
+piste PIT de l'attente AP est **morte**. Vérification statique : `pit_udelay` est
+**upstream** (`38e82f35`, remplace `hpet_udelay` dans `smp.c`) et n'utilise que le
+**canal 2** (`PIT_C2|PIT_LOADMODE|PIT_ONESHOTMODE`) ; seul `clkstart()`
+(`pit.c:123`) touche le canal 0 (`pit0_mode = PIT_C0|PIT_SQUAREMODE|PIT_READMODE`,
+`pitctl_port`/`pitctr0_port` écrits uniquement en `pit.c:137/140/142`). Seul
+`pit_udelay(1000)` de `mp_desc.c` est fork-only (`99a21a39`).
+
+#### 3) Au « gel » : le guest n'était pas mort — l'**horloge** l'était
+
+Première surprise (GDB) : une manche `-smp 2` (overlay `ovl-t3`) atteint en fait
+**`login:`**, répond en SSH (`nproc = 2`, `up 74 seconds`, 61 processus, 7
+sessions) ⇒ le classement « WEDGE » par lecture d'écran est un **faux positif**.
+Côté noyau, la backtrace de CPU0 dans cet état est
+`host_get_uptime64 → time_value64_add_hpc → hpclock_read_counter` : une **boucle
+d'interrogation utilisateur** (poll de l'heure), **pas** un `wait_event`.
+
+Thermomètre noyau (lu **en mémoire guest** par le moniteur QEMU, jamais par
+gdb — cf. commandes ci-dessous) :
+
+| | `-smp 1` (témoin) | `-smp 2` (deux manches, **sans** gdb) |
+|---|---|---|
+| `uptime` / `mtime->uptime_value` | **+20,000 s en 20 s** | **figé** à `0,120`…`0,130 s` sur 15–30 s |
+| `last_hpc_read` | avance (wrap 2³²) | **inchangé** (`12281282 → 12281282`) |
+| écran | `login:` à **T+30 s** | figé sur la numérotation PCI rump (`[ 1.0000050]`) |
+| `login:` atteint | oui | **non** (≥ 640 s) |
+| `master_cpu` | `0` | `0` |
+
+**Cause mécaniste (mesurée)** : sous `-smp 2`, la **CPU maître (0) ne reçoit plus
+l'interruption d'horloge ~100 Hz dès que l'AP est démarré**, alors que le guest,
+lui, vit. Or `clock_interrupt()` (`kern/mach_clock.c`) n'avance l'heure
+(`time`/`uptime`), les **timeouts** et `last_hpc_read` **que sur `master_cpu`**
+(`if (my_cpu == master_cpu)` ; `last_hpc_read = hpclock_read_counter()` l.341).
+Conséquence en chaîne :
+
+1. l'heure du noyau **et** de l'utilisateur (`host_get_uptime64`) **gèle** ;
+2. plus aucun **timeout** n'expire et plus aucune **préemption** (quantum /
+   `sched_tick`) n'a lieu sur la CPU 0 ⇒ le fil utilisateur qui interroge
+   l'horloge **tourne sans fin** ;
+3. `rumpdisk` attend un délai/timeout d'attache AHCI qui **n'arrive jamais** ⇒
+   blocage à `ahcisata0: 64-bit DMA` = **la cause racine du « gel I/O »** ; ce
+   n'est **ni** un défaut de routage IOAPIC **ni** un défaut d'I/O.
+
+Preuves APIC/IRQ (moniteur) :
+
+- `info pic` : **pin 2 = `0x0000000000000030` dest=0 vec=48, actif-haut, edge,
+  non masqué** — **identique** sous `-smp 1` (qui marche) et `-smp 2` (qui gèle)
+  ⇒ ce n'est pas un masquage/déroutage de l'IOAPIC (pins 0-4 identiques) ;
+- `info lapic` : la **LVTT de CPU0 est masquée/one-shot** (`initial_count =
+  0xffffffff`, reste de `calibrate_lapic_timer()`/`timer_measure_10x_apic_hz()`
+  qui finit par `lvt_timer.r |= LAPIC_DISABLE`) — **dans les deux cas `-smp 1` et
+  `-smp 2`** ⇒ le tick de CPU0 **ne vient pas** de son minuteur LAPIC ;
+- sous `-smp 2`, la **CPU1 (AP) a, elle, un minuteur LAPIC périodique**
+  (`LVTT 0x00020030 periodic`, `initial_count = 5859840`, vec 48) ⇒ **c'est le
+  `hardclock` ≈ 100 Hz mesuré en 2e/3e passes : un tick sur l'AP, qui
+  n'avance pas l'heure (`my_cpu != master_cpu`)**. **Correction explicite** de la
+  2e/3e passe : « IRQ délivrées, horloge OK » est **faux** — les IRQ d'horloge
+  sont délivrées à **l'AP**, pas à la maître ; `master_cpu` vaut 0 dans les deux
+  cas (ce n'est donc pas une erreur de numérotation de CPU).
+- compte rendu cohérent avec `-smp 1` : pas d'AP, donc la maître génère elle-même
+  son tick (PIT remappé, pin 2) et l'horloge vit ⇒ `-smp 1` **reste la
+  référence fonctionnelle**.
+
+Zone restante à trancher (**5e passe**) — **aucun patch noyau** (le défaut
+instruction-par-instruction n'est pas encore isolé) :
+
+- seul code exécuté **exclusivement quand l'AP démarre** : `start_other_cpus()`
+  (`mp_desc.c:280`) — `splhigh()` → `lapic_disable()` (`:314`) → attente AP
+  bornée (`pit_udelay(1000)`, canal 2, `:334`) → `pmap_remove_temporary_mapping()`
+  → `interrupt_processor()` → `lapic_enable()` (`:360`). Le `spl` n'est **pas**
+  resté haut (`TPR = 0x00` au gel) ⇒ suspect principal = la paire
+  `lapic_disable()`/`lapic_enable()` (ou la séquence d'attente AP) ;
+- détail concordant : `startrtclock()` (`model_dep.c:926`) n'appelle
+  `lapic_enable_timer()` **que si `cpu_number() != 0`** ⇒ sur CPU0 le minuteur
+  LAPIC est volontairement laissé masqué (masqué par la calibration) et c'est
+  bien le **PIT remappé (pin 2)** qui doit fournir le tick de la maître ; c'est
+  cette source-là qui se tarit sous `-smp 2` ;
+- instrumentation prévue : compteurs **par CPU** (ou point d'arrêt gdb) dans
+  `hardclock`/`clock_interrupt`, lus **avant/après chaque étape** de
+  `start_other_cpus()`, pour voir **à quelle instruction le tick maître
+  disparaît** — c'est la première fois qu'on dispose d'un effet **binaire et
+  reproductible** (horloge vivante vs figée) à instrumenter.
+
+#### Méthodologie (corrections de cette passe)
+
+- **Le classement « gel » par lecture de l'écran est trompeur** (faux positif
+  constaté : une manche « gelée » boote en fait). Ne lire l'écran qu'**une seule
+  fois** en fin de manche (l'échantillonnage continu, `xp` répétés, tient le BQL
+  de QEMU et désynchronise les vCPU ⇒ il fausse le taux de gel) ; classer BOOT
+  sur la présence de `login:` / `debian tty1` (le serveur console Hurd efface
+  l'écran et écrit en haut).
+- **Ne jamais mesurer une VM en pause** : un `gdb` tué par `timeout` **sans
+  `detach`** laisse QEMU `paused` sans client ⇒ SSH « Connection timed out
+  during banner exchange ». Toujours finir par `detach` et vérifier
+  `info status` = `running`.
+- Sous `kernel-irqchip=on`, `info pic`/`info irq` reflètent l'IOAPIC **KVM** et
+  sont partiels/incomplets ; s'appuyer sur les **compteurs noyau** (`uptime`,
+  `last_hpc_read`, `mtime`, `master_cpu`), lus en **mémoire guest** via le
+  moniteur.
+- LAPIC/IOAPIC non lisibles depuis l'hôte quand KVM possède l'irqchip :
+  utiliser HMP `cpu N` puis `info lapic`.
+
+#### Reproduire (4e passe)
+
+```sh
+# témoin -smp 1 (horloge vivante) vs -smp 2 (horloge morte) :
+cp /home/ben/hurd-fork/vm/ovl-stock-smp2.qcow2 /home/ben/hurd-fork/vm/ovl-exp-C1.qcow2
+cd /home/ben/hurd-fork/project/vm
+SMP=1 FRESH=0 OVL=/home/ben/hurd-fork/vm/ovl-exp-C1.qcow2 MON=/tmp/exp-C1-mon \
+  SSH_PORT=2801 VIOIF_PORT=2901 ./run-hurd64-smp.sh /home/ben/hurd-fork/vm/hurd-dev.qcow2
+# (remplacer SMP=1 par SMP=2, et C1 par C2, pour le cas qui gèle)
+
+# thermomètre noyau : lire uptime / mtime->uptime_value / last_hpc_read / master_cpu
+# (symboles du fork : uptime 0xffffffff810ba2b0, mtime 0xffffffff810b8eb0,
+#  last_hpc_read 0xffffffff810b8eb8, master_cpu 0xffffffff810ba8c8) :
+printf 'x/2gx 0xffffffff810ba2b0\nx/wx 0xffffffff810b8eb8\nx/wx 0xffffffff810ba8c8\n' \
+  | socat - UNIX-CONNECT:/tmp/exp-C1-mon
+# relire 20 s plus tard : -smp 1 => uptime +20,000000000 ; -smp 2 => figé.
+# info lapic (par CPU) et info pic :
+printf 'cpu 0\ninfo lapic\ninfo pic\n' | socat - UNIX-CONNECT:/tmp/exp-C1-mon
+
+# manches répétées BOOT/WEDGE (une seule lecture d'écran, contrôle SSH sur BOOT) :
+SMP=2 WAIT=85 vm/trials-smp.sh /home/ben/hurd-fork/vm/ovl-fork-master.qcow2 6
+SMP=2 WAIT=85 vm/trials-smp.sh /home/ben/hurd-fork/vm/ovl-fork-master.qcow2 6 maxcpus /tmp/gnumach-new
+```
 
 ## Virtio stockage (`virtio-blk` / `ld_virtio`) (17/10/2026) — recette prête, non exécutable ici
 
