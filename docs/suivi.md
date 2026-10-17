@@ -225,14 +225,11 @@ Branches locales `fork/x86_64` créées sur `mig`, `gnumach`, `hurd` (upstream =
   binaire `.../rumpnet/rumpnet-vioif-test`, libs `/usr/lib/librump*.so*`
   (114 fichiers), scripts. **glibc** doit être ≥ **2.43** (les binaires rump
   exigent `GLIBC_2.43`) → `libc0.3` mis à jour `2.42 → 2.43-7`.
-- **vioif** : le driver démarre et détecte `vioif0`
-  (MAC `52:54:00:12:34:58`) **seulement avec 4 Go de RAM**. En 2 Go :
-  `virtio0: virtqueue 0 for rx0 allocation failed, error code 1` (le driver
-  ne s'attache pas). En 4 Go : `virtio0: interrupting at pausebreak`,
-  IRQ enregistrée, process `rumpnet-vioif-test` vivant.
-- **vioif : voir § « Résolution vioif » ci-dessous.**
-- Le projet est désormais **console pure / headless** : plus de X11/XFCE
-  (ne pas installer `xfce4`/`xdm`/Xorg).
+- **vioif** : démarre et s'attache **seulement avec 4 Go de RAM**
+  (cf. § « Résolution vioif » ci-dessous). En 2 Go :
+  `virtio0: virtqueue 0 for rx0 allocation failed, error code 1`.
+- **Console pure / headless** : plus de X11/XFCE (ne pas installer
+  `xfce4`/`xdm`/Xorg).
 
 ## Résolution vioif / bascule réseau (17/10/2026)
 
@@ -267,8 +264,21 @@ Branches locales `fork/x86_64` créées sur `mig`, `gnumach`, `hurd` (upstream =
   `netdde` est identique sur les deux disques. Mais un test A/B (graft du
   `pfinet` du fork + `libtrivfs/libfshelp/libports/libshouldbeinlibc` du
   fork) **ne change rien** au blocage → ce n'est pas un bug `pfinet` mais un
-  problème de démontage IRQ à chaud. Les binaires du fork restent extraits
-  sous `/tmp/old-hurd-dir` (récupérables) mais **non nécessaires**.
+  problème de démontage IRQ à chaud. Les binaires du fork sont conservés
+  hors dépôt dans `~/hurd-fork/recovered/hurd-fork-20261008/` (voir son
+  `README.md`) mais **non nécessaires** — l'attache au boot marche avec les
+  binaires Debian de base.
+
+## Sécurité disque (consignes permanentes)
+
+- Ne **jamais** démarrer `debian-hurd-amd64-*.img` en écriture.
+- Ne **jamais** ré-extraire/réécraser une image qui sert de *backing file*.
+- `vm/run-*.sh` n'utilisent qu'une copie **autonome** (`hurd-dev.qcow2`,
+  `-m 4G`) ; `run-hurd64-smp.sh` et `run-hurd64-vioif.sh` démarrent en plus
+  sur un **overlay jetable** (`hurd-*-test.qcow2`, recréé à chaque lancement)
+  pour les essais risqués → le disque de dev n'est jamais touché.
+- Sauvegarde d'un état qui marche : `hurd-dev.qcow2.good-20261017`
+  (copie faite VM éteinte proprement).
 
 ## Références
 
