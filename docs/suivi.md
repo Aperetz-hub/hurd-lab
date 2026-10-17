@@ -751,6 +751,129 @@ SMP=2 WAIT=85 vm/trials-smp.sh /home/ben/hurd-fork/vm/ovl-fork-master.qcow2 6
 SMP=2 WAIT=85 vm/trials-smp.sh /home/ben/hurd-fork/vm/ovl-fork-master.qcow2 6 maxcpus /tmp/gnumach-new
 ```
 
+### 5th pass: CPU0 loses its 100 Hz tick at AP start-up — **FIXED** (18/10/2026)
+
+**Root cause found and fixed.** `start_other_cpus()` disabled the **BSP's own local
+APIC** (`lapic_disable()`) around the AP bring-up. While `LAPIC_ENABLE` is clear the
+BSP cannot accept *any* IOAPIC interrupt, so the 100 Hz PIT edges that arrive in
+that window are consumed without ever being delivered, and the master CPU never
+receives a clock tick again. Because `clock_interrupt()` advances time, the
+timeout list and `last_hpc_read` **only on `master_cpu`**, the whole system clock
+freezes: no time, no timeout, no preemption — and `rumpdisk` spins forever in its
+AHCI attach. The fix is to **not** disable the BSP's LAPIC (`splhigh()` already
+blocks interrupts for the whole window).
+
+#### 1) New instrumentation (why the 4th pass could not see it)
+
+- `vm/kprobe.py` — reads kernel globals straight out of **guest memory** through
+  the QEMU monitor (`x/…`). Never gdb: the guest is never paused, so it cannot
+  perturb or heal the fault. The ELF of the kernel under test must be passed in
+  `KPROBE_ELF`, otherwise the addresses are wrong (all zeros).
+- `vm/smp-clock-check.sh` — runs N rounds of `-smp 2` and classifies each round by
+  the **kernel clock** instead of by the screen: `BOOT` if `elapsed_ticks` grows,
+  `FROZEN` if it is stuck in the low tens.
+- `vm/install-kernel.sh` — installs a kernel image into a **disposable copy** of
+  the fork master (boots `-smp 1`, scp, `sudo cp`, md5 verify, halt). Note: the
+  guest answers SSH on the **virtio-net** forward (`VIOIF_PORT`), not on the e1000
+  one, and `scp` needs `-P` (uppercase) for the port.
+
+#### 2) Measured state of a frozen `-smp 2` guest
+
+| observation | value |
+|---|---|
+| `elapsed_ticks` / `uptime` | **frozen at 12 / 0.120 s** |
+| `master_cpu` | `0` |
+| `curr_ipl[0]` / `curr_ipl[1]` | `0` / `0` — software IPL is **not** stuck high |
+| `info pic` pin 2 (PIT) | `0x30` dest=0 vec=48, edge, **unmasked** — identical to the working `-smp 1` case |
+| `info lapic` CPU0 | `LVTT 0x10030` masked/one-shot, `SPIV 0x1ff` (APIC **enabled**), `TPR 0x00`, `ISR (none)`, `IRR (none)` |
+| `info lapic` CPU1 (AP) | `LVTT 0x20030 periodic`, `initial_count = calibrated_ticks` → the AP's own periodic LAPIC timer works |
+| CPU0 `RIP` / `EFL` | `hpclock_read_counter`, **`IF = 1`** → a user-mode polling loop with interrupts enabled |
+
+Hypotheses eliminated by measurement:
+
+- **unbalanced `splhigh()`** in `start_other_cpus()` → **disproven**:
+  `curr_ipl[0] = 0` and `EFL.IF = 1`;
+- **`pit_udelay()` of the AP wait** → already dropped in the 4th pass (kernel B,
+  `cpu_pause()`, still froze 6/6);
+- **IOAPIC misprogramming** → **disproven**: pin 2 is unmasked, `dest=0`,
+  `vec=48`, identical to the working case;
+- **the PIT specifically is dead** → **disproven**: after `sendkey a` the IOAPIC
+  *does* count IRQ1 (3 → 9), yet CPU0 keeps polling and the clock stays frozen
+  ⇒ the BSP stopped accepting IOAPIC interrupts **in general**, not just the
+  timer.
+
+**Decisive clue**: attaching and detaching gdb **once** (a pure vCPU
+pause/resume) took `elapsed_ticks` from **12 → 1013**; the clock then ran at
+exactly 100 Hz and the guest booted all the way to `login:`. So the interrupt is
+*pending but never re-injected* — a latched delivery that only a vCPU re-entry
+clears. The only window in the entire AP start-up where the BSP cannot accept an
+IOAPIC interrupt is the `lapic_disable()` … `lapic_enable()` one, and edges
+arriving inside it are dropped.
+
+#### 3) The fix
+
+`src/gnumach` (branch `fork/x86_64`), `i386/i386/mp_desc.c` →
+`start_other_cpus()`: drop the `lapic_disable()` / `lapic_enable()` pair around
+the AP bring-up. `splhigh()` already blocks interrupts on the BSP for the whole
+window, so masking the LAPIC buys nothing; and it never covered the APs anyway
+(there is no execution on them yet). 17 insertions / 11 deletions, one function.
+
+#### 4) Validation
+
+Both kernels built with the pass-4 toolchain
+(`--host=x86_64-pc-gnu --enable-ncpus=2`, `make gnumach`, `gzip -n -9`), each
+installed into a disposable copy of the fork master:
+
+| kernel | md5 of `gnumach-1.8-amd64-up.gz` | `-smp 2` result |
+|---|---|---|
+| baseline (HEAD, unpatched) | `0e9409e9bc034f817e7c6ca65147713c` | **0 BOOT / 3 FROZEN** (`elapsed_ticks` = 12) |
+| **patched** | `98439c22ce31bbd58397eb333b515c23` | **12 BOOT / 0 FROZEN** |
+
+- `smp-clock-check.sh`, 8 rounds patched (two independent batches of 4):
+  `elapsed_ticks` +1007 per 10 s, i.e. **100.7 Hz**, `uptime` +10.0 s per 10 s —
+  **no double ticking** (CPU0's LAPIC timer stays masked by design,
+  `model_dep.c:931`, so the PIT remains the single clock source on CPU0).
+- `trials-smp.sh`, 4 rounds patched (screen verdict + SSH control): **4/4 BOOT**,
+  SSH reports **`nproc = 2`** and the patched kernel md5 — the AP is genuinely up,
+  not merely "not hanging".
+- **Regression** — patched kernel at `-smp 1`: **3/3 BOOT**, clock at 100 Hz.
+
+⇒ The `-smp 2` hang is fixed, and the `-smp 1` reference is untouched.
+
+#### 5) Reproduce (5th pass)
+
+```sh
+# 1. build the patched kernel (src = a checkout of fork/x86_64)
+cd /tmp/gm/build && make gnumach
+gzip -n -9 -c /tmp/gm/build/gnumach > /tmp/kP1.gz
+
+# 2. install it into a DISPOSABLE copy of the fork master (never the master)
+vm/install-kernel.sh /tmp/kP1.gz /home/ben/hurd-fork/vm/ovl-p5-fix.qcow2 2860
+
+# 3. clock-based validation (KPROBE_ELF must match the kernel under test)
+KPROBE_ELF=/tmp/gm/build/gnumach vm/smp-clock-check.sh \
+  /home/ben/hurd-fork/vm/ovl-p5-fix.qcow2 4 50          # expect BOOT=4 FROZEN=0
+
+# 4. screen verdict + SSH control (nproc must be 2)
+SMP=2 WAIT=85 vm/trials-smp.sh /home/ben/hurd-fork/vm/ovl-p5-fix.qcow2 4
+
+# 5. freeze a guest on purpose to re-observe the wedge, then heal it:
+#    gdb attach/detach (or any vCPU pause) turns elapsed_ticks 12 -> 1013
+```
+
+#### 6) Notes / collateral findings
+
+- **`info irq` does not count the PIT.** On a healthy guest running at 100 Hz the
+  IOAPIC counters show only device lines (keyboard, serial, AHCI) and **no
+  IRQ 0**; the keyboard line *does* move. Never conclude "the PIT is dead" from
+  `info irq` — use `elapsed_ticks` / `uptime`.
+- `vm/kprobe.py` must normalise the monitor's `\r` echoes before parsing: the HMP
+  prompt and the value end up on the same `splitlines()` element, which silently
+  dropped the readings depending on socket chunking.
+- The fix reverts an **upstream** behaviour ("Disable IOAPIC interrupts … to
+  prevent IOAPIC interrupts from interfering with SMP startup"), so it is worth
+  reporting upstream: `splhigh()` already covers the stated intent on the BSP.
+
 ## Virtio storage (`virtio-blk` / `ld_virtio`) (17/10/2026) — recipe ready, not executable here
 
 Goal: extend the virtio rump recipe (already OK for
