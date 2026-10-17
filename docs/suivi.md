@@ -73,6 +73,39 @@ Branches locales `fork/x86_64` créées sur `mig`, `gnumach`, `hurd` (upstream =
   (branche `kernel-src`) mais ne sont pas packagés par Debian → builder les
   libs rump, les lier dans `RUMPLIBS`, tester avec `-device virtio-net-pci`.
 
+## virtio-net (`vioif`) rump sur Hurd (17/10/2026) — crash corrigé
+
+- Contexte : `libvirtio_if_vioif` + `libpci_virtio` ne sont pas packagés par
+  Debian → buildés à partir de `nbsrc25` (NetBSD 2025-01, commit `4a1a4e8`).
+  Recette : `patches/build/build-virtio.sh` ; relink :
+  `patches/build/link-vioif.sh` (binaire non-PIE pour symboliser les crashes).
+- **Bug** : après un attachement correct de `vioif0` (MAC `52:54:00:12:34:58`,
+  virtqueues rx/tx/ctrl, IRQ 20), SIGSEGV au `device_open` (chemin
+  `up_interface` → `rump_sys_ioctl(SIOCSIFFLAGS)` → `vioif_init` →
+  `vioif_rx_filter` → `vioif_set_rx_filter` → `vioif_ctrl_acquire` →
+  `curlwp`) sur `mov %gs:0xac0,%rax` (base `%gs` = 0, sous-code 0xAC0).
+- **Cause** : nos objets étaient compilés avec le `<machine/cpu.h>` de l'arch,
+  où `curlwp == x86_curlwp()` (accès `%gs`). Or sous Hurd, rump n'utilise
+  **pas** `%gs` (glibc réserve `%fs` pour le TLS) : il faut
+  `curlwp == rump_curlwp_fast()` (mécanisme *hypercall*,
+  `rump_lwproc_curlwp_hypercall()`), tel que défini par le
+  `sys/rump/include/machine/cpu.h`. L'ordre d'include upstream
+  (`sys/rump/Makefile.rump`) met `-I${RUMPTOP}/include` **en premier** ; notre
+  recette mettait `-I$D` (build dir, `machine -> arch`) en premier → mauvais
+  `cpu.h`. (`-I$D` d'abord avait été choisi pour que `<machine/intr.h>` =
+  arch, car `x86/pci_machdep.h` exige `intr_handle_t`.)
+- **Fix** : interposer `$HOME/ovr/machine/cpu.h -> rump` et
+  `$HOME/ovr/machine/intr.h -> arch`, `ovr` en tête du `-I`, +
+  `-D_RUMPKERNEL`. Vérification : `if_vioif.pico` n'a plus aucune référence
+  `%gs:` ni `x86_curlwp`, et appelle `rump_lwproc_curlwp_hypercall`.
+- **Résultat** : `device_open("vioif0") -> err=0` via le translator rumpnet,
+  attache stable, plus aucun crash (backtrace sous gdb). Étape suivante :
+  `pfinet` sur le device / démarrage au boot.
+- Méthode : lancer le translator sous gdb (`settrans -ac NODE wrapper-gdb`).
+  **Attention** : `settrans` sans `-a` = translator *passif* (démarre
+  seulement à l'ouverture du nœud). Nettoyer les nœuds translator laissés :
+  `find /` les ouvre et peut figer la VM.
+
 ## Références
 
 - FOSDEM 2026 Thibault : x86_64 essentiellement complet (MIG RPC), ~75% Debian.
