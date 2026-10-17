@@ -271,6 +271,152 @@ mesure faite sans `cont` est donc faussée (HPET « figé », SSH qui expire,
 ⇒ Chantier **non isolé** (rump/Hurd, pas un simple verrou gnumach) :
 `-smp 2` reste **inutilisable** ; `-smp 1` reste la référence fonctionnelle.
 
+> ⚠️ **Mise à jour (2e passe, même jour)** : l'interprétation « course SMP dans
+> `device/intr.c` / IRQ utilisateur masqué » ci-dessus est **écartée** par les
+> mesures de la section suivante. La panne est **en amont** : aucun IRQ
+> matériel n'arrive au CPU dès que l'**IOAPIC est émulé par KVM**
+> (`kernel-irqchip=on`), alors que tout fonctionne avec un IOAPIC émulé par
+> QEMU (`kernel-irqchip=split`). Voir § *Autopsie du gel `-smp 2` — 2e passe*.
+
+## Autopsie du gel `-smp 2` — 2e passe : différentiel IOAPIC **KVM vs QEMU** (17/10/2026)
+
+Méthode nouvelle (aucune écriture dans `hurd-dev.qcow2` ; overlays jetables) :
+
+- **Capture du log de boot complet via la mémoire VGA, VM jamais figée** :
+  HMP `xp/4000cb 0xb8000` lit le buffer texte (`0xb8000` physique, paires
+  octet/attribut → caractères aux offsets pairs, 80 colonnes). L'échantillonneur
+  `vm/vgacap.py` (`SOCK=… OUT=… DUR=…`) n'écrit que les écrans qui changent.
+  C'est la **seule** façon d'obtenir le log noyau + utilisateur en headless :
+  `-serial file:` reste **vide**, tout passe par la VGA.
+- **Lecture de l'IOAPIC via gdb** : possible *uniquement* si l'IOAPIC n'est pas
+  détenu par KVM, c.-à-d. avec `-M q35,kernel-irqchip=split`. On écrit le
+  sélecteur puis on lit la fenêtre à travers le mapping noyau de l'IOAPIC
+  (`apic_data.ioapic_list[0].ioapic` = `0xffffffffca927000`) :
+  `set {unsigned int}0xffffffffca927000 = 1` ; `x/1xw 0xffffffffca927010`
+  → `0x00170020` (24 pins, version `0x20`). Avec `kernel-irqchip=on` (défaut),
+  ces accès ne sont **pas** lisibles depuis l'hôte (région possédée par
+  l'irqchip noyau) : d'où l'échec des lectures précédentes.
+
+### Résultat décisif : le gel suit l'IOAPIC émulé par KVM
+
+| configuration QEMU | noyau | `-smp` | résultat |
+|---|---|---|---|
+| `-M q35` (KVM irqchip, défaut) | fork (build SMP, oct. 2026) | 2 | **gel** : écran figé > 206 s sur `ahcisata0: 64-bit DMA` |
+| `-M q35` | fork | 1 | boot complet → `login:` (attache AHCI OK à `1.040 s` de temps rump) |
+| **`-M q35,kernel-irqchip=split`** | **fork** | **2** | **boot complet (~40 s) → `login:`, clavier OK** |
+| `-M q35` (KVM irqchip) | **stock (2026-02-24, `-up`)** | 2 | boot complet, clavier OK |
+
+- En `-smp 2` (KVM irqchip) le blocage se produit **exactement** entre
+  `ahcisata0: 64-bit DMA` et `ahcisata0: interrupting at …` (message imprimé
+  juste après l'établissement de l'IRQ PCI par `rumpdisk`). En `-smp 1` la
+  suite défile immédiatement : `interrupting at pausebreak`, `atabus0..5`,
+  `wd0 at atabus0 drive 0`, `wd0(ahcisata0:0:0): using PIO mode 4 …`, puis
+  login / `sshd`.
+- **Avec l'IOAPIC émulé par QEMU (`kernel-irqchip=split`), le même noyau fork
+  en `-smp 2` démarre normalement et le clavier répond** (chaque `sendkey ret`
+  rend un nouveau prompt `login:`). ⇒ ni rumpdisk ni la logique gnumach ne
+  sont fautifs en soi : c'est **l'interaction avec l'IOAPIC du noyau hôte KVM**
+  qui échoue.
+- Contrôle : le **noyau stock** (2026-02-24, suffixe `-up`) fonctionne avec
+  l'IOAPIC KVM ⇒ l'IOAPIC KVM n'est pas intrinsèquement cassé ; la régression
+  est bien côté **noyau du fork**.
+- Le noyau fork est un **build SMP** (`NCPUS=2`) alors que le stock est `-up`.
+  La panne clavier apparaît **aussi en `-smp 1`** ⇒ elle n'exige pas 2 vCPU :
+  c'est le *build SMP* (et/ou les commits post-24/02) qui diffère.
+
+### Entrées IOAPIC observées (dans le cas qui marche, `kernel-irqchip=split`)
+
+```
+VER = 0x00170020                    (24 pins, version 0x20)
+pin  1 (clavier) low = 0x00000031 → vecteur 49, non masqué, edge, actif haut ✔
+pin  2 (timer)   low = 0x00000030 → vecteur 48, non masqué ✔   (remap timer)
+pin  3           low = 0x00010033 → masqué
+pin  9 (ACPI)    low = 0x00008039 → masqué, niveau, actif bas
+pin 10 (SATA)    low = 0x0001803a → masqué
+pin 16           low = 0x0000a040 → masqué, niveau
+has_irq_specific_eoi = 1 (version 0x20 ⇒ EOI dirigée)
+```
+
+Le noyau programme donc correctement pin1/pin2 ; les pins PCI restent
+**masqués** même après installation des handlers utilisateur
+(`user_intr_handlers[9/16/23] ≠ NULL`).
+
+### Hypothèses écartées par la mesure
+
+- **`has_irq_specific_eoi` / « workaround » EOI** : avec l'IOAPIC KVM la version
+  lue est `0x11` (KVM n'annonce pas `0x20`) ⇒ `has_irq_specific_eoi = 0` ⇒
+  chemin *mask/edge/restore* à **chaque** EOI. Mais (a) le noyau **stock** lit
+  aussi `0x11` et **fonctionne** ; (b) forcer la valeur à 0 à chaud dans le cas
+  qui marche **ne casse rien**. ⇒ ce drapeau n'est pas le déclencheur.
+- **`ioapic.c` est identique** entre le noyau stock (2026-02-24) et le HEAD du
+  fork : `ioapic.c`, `int_init.c`, `idt.c`, `irq.c`, `apic.h`, `device/intr.c`,
+  `kd.c`, `spl.c` → **aucune modification** (`git diff f7debdac..HEAD`).
+- **`device/intr.c`** (`assert_wait`/`queue_intr`/`irq_acknowledge`/
+  `intr_thread`) : **jamais atteinte** — `irqtab.tot_num_intr = 0`, files
+  `main_intr_queue` (id 9/16/23) à `interrupts = n_unacked = 0`,
+  `nested_irqs[].ndisabled = 0`, handlers `user_intr_handlers` bien installés.
+  Le défaut est **au-dessous** : aucun IRQ matériel n'atteint le CPU (seule
+  l'IT horloge LAPIC fonctionne). `kdintr` est bien en place (`ivect[1]`) et
+  `unexpected ACK from keyboard` prouve que `kdinit` (donc
+  `unmask_irq(KBD_IRQ)`) s'exécute aussi dans le noyau fork.
+- **Fenêtre de régression** (2026-02-24 → HEAD) : `model_dep.c` (multiboot2/UEFI
+  + réordonnancement `machine_init` uniquement), `mp_desc.c` (+34 : dégradation
+  AP du fork, avec `pit_udelay(1000)` dans la boucle d'attente — exécutée
+  **seulement si `ncpus > 1`**), `mach_clock.c` (`host_adjust_time64`),
+  `apic.c` (HPET optionnel, garde `hpclock_read_counter`), `smp.c`
+  (`hpet_udelay`→`pit_udelay`), `locore.S` (retrait MACH_TTD, `cpuid`/ebx).
+  Aucune ne démontre directement « IRQ jamais délivrée ».
+
+### Conclusion d'audit — pas de correctif à l'aveugle
+
+- L'hypothèse de départ (verrouillage `assert_wait` + `queue_intr` +
+  `device_intr_ack` + `ioapic_toggle` dans `device/intr.c`) est **écartée** :
+  la mécanique est cohérente et **jamais sollicitée** (rien d'enfilé, rien de
+  masqué, aucun verrou tenu). Le défaut est en amont : **obtention des IRQ
+  matériels par un noyau *build SMP* vis-à-vis de l'IOAPIC émulé par KVM**.
+- **Aucun défaut isolé et démontrable** n'a été identifié ⇒ **pas de patch
+  noyau** (un correctif non prouvé casserait la référence `-smp 1`
+  fonctionnelle).
+- **Contournement immédiat** (overlay jetable uniquement) : lancer `-smp 2`
+  avec un IOAPIC émulé par QEMU — validé (boot complet + clavier) :
+  ```sh
+  MACHINE=q35,kernel-irqchip=split SMP=2 OVL=… MON=… SSH_PORT=2322 \
+    ./run-hurd64-smp.sh /home/ben/hurd-fork/vm/hurd-dev.qcow2
+  ```
+  (ne jamais modifier `hurd-dev.qcow2` ; le défaut `MACHINE=q35` reste
+  inchangé.)
+
+### Reproduire
+
+```sh
+cd /home/ben/hurd-fork/project/vm
+# overlay jetable avec le noyau fork en /boot/gnumach-1.8-amd64-up.gz
+OVL=/home/ben/hurd-fork/vm/ovl-stock-smp2.qcow2 FRESH=0 MON=/tmp/hurd-smp2-mon \
+  SMP=2 SSH_PORT=2322 VIOIF_PORT=2323 ./run-hurd64-smp.sh \
+  /home/ben/hurd-fork/vm/hurd-dev.qcow2
+# lire l'écran sans figer la VM :
+printf 'xp/4000cb 0xb8000\n' | socat - UNIX-CONNECT:/tmp/hurd-smp2-mon
+# log continu :
+SOCK=/tmp/hurd-smp2-mon OUT=/tmp/bootlog-smp2.txt DUR=300 python3 vm/vgacap.py
+# variante qui démarre (IOAPIC userspace) :
+MACHINE=q35,kernel-irqchip=split SMP=2 OVL=… MON=/tmp/hurd-split-mon \
+  ./run-hurd64-smp.sh /home/ben/hurd-fork/vm/hurd-dev.qcow2
+# IOAPIC via gdb (stub : printf 'gdbserver tcp::1234\n' | socat - UNIX-CONNECT:$MON) :
+#   set {unsigned int}0xffffffffca927000 = 1 ; x/1xw 0xffffffffca927010
+```
+
+### Prochaines expériences (précises)
+
+1. Instrumenter `ioapic_toggle_entry` / `unmask_irq` / `ioapic_irq_eoi`
+   (ring buffer `pin`/`mask`/`entry.lo`/`cpu`) et lire au blocage via gdb →
+   détecter un read-modify-write corrompu.
+2. Trancher « build SMP » vs « AP démarré » : même noyau, `kernel-irqchip=on`,
+   avec `nosmp`/`maxcpus=1` (l'AP ne démarre pas) vs sans.
+3. Tester la piste `pit_udelay(1000)` de `mp_desc.c` (canal 2 PIT / port 0x61)
+   en la retirant de la boucle d'attente AP.
+4. Comparer le routage PIC→GSI `KVM_SET_GSI_ROUTING` côté hôte entre noyau
+   stock (OK) et fork (KO) — nécessite les symboles du noyau stock.
+
 ## Virtio stockage (`virtio-blk` / `ld_virtio`) (17/10/2026) — recette prête, non exécutable ici
 
 Objectif : étendre la recette rump virtio (déjà OK pour
