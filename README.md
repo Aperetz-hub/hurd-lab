@@ -1,98 +1,98 @@
-# hurd-lab — fork GNU/Hurd x86_64 : SMP + rumpnet virtio
+# hurd-lab — GNU/Hurd x86_64 fork: SMP + rumpnet virtio
 
-Fork expérimental de GNU/Hurd (64-bit) avec deux objectifs :
+Experimental fork of GNU/Hurd (64-bit) with two goals:
 
-1. **gnumach** : ne plus pendre le boot quand les AP ne démarrent pas
-   (dégradation propre vers mono-CPU au lieu de `while (1)`).
-2. **rumpnet** : ajouter le support réseau **virtio-net** (`vioif`) — pilotes
-   `rumpdev_virtio_if_vioif` / `rumpdev_pci_virtio`, absents des paquets
-   Debian — puis en faire l'interface réseau par défaut.
+1. **gnumach**: stop hanging the boot when APs fail to start
+   (clean degradation to single-CPU instead of `while (1)`).
+2. **rumpnet**: add **virtio-net** (`vioif`) network support — drivers
+   `rumpdev_virtio_if_vioif` / `rumpdev_pci_virtio`, absent from the Debian
+   packages — then make it the default network interface.
 
-## État (17/10/2026)
+## Status (17/10/2026)
 
-> **Mode console pure / headless — aucun X11.** Ce projet ne tourne **jamais**
-> avec Xorg, `xdm` ou XFCE : tout se fait en console texte + SSH. Ne pas
-> installer `xfce4`/`xdm`/Xorg sur la VM.
+> **Pure console / headless mode — no X11.** This project **never** runs
+> with Xorg, `xdm` or XFCE: everything happens in a text console + SSH. Do
+> not install `xfce4`/`xdm`/Xorg on the VM.
 
-- **virtio-net (`vioif`) : fonctionnel au boot.**
-  - Crash `curlwp`/`%gs` corrigé (interposition de `<machine/cpu.h>` rump +
-    `-D_RUMPKERNEL`, voir `patches/build/`).
-  - La VM démarre sur `/dev/vioif0` (MAC `52:54:00:12:34:58`) : `ping` gateway
-    + `8.8.8.8`, DNS, HTTPS (`wget`), SSH (hostfwd hôte `2223`) — OK.
-  - Intégration **au boot** : `scripts/start-rumpnet.sh` (translator rumpnet +
-    devnode `/dev/vioif0`, appelé en `pre-up`) + `scripts/interfaces.vioif` ;
-    `eth0`/netdde en secours (non-auto).
-  - **`-m 4G` obligatoire** : en 2 Go le pilote ne s'attache pas
+- **virtio-net (`vioif`): functional at boot.**
+  - `curlwp`/`%gs` crash fixed (interposition of rump's `<machine/cpu.h>` +
+    `-D_RUMPKERNEL`, see `patches/build/`).
+  - The VM boots on `/dev/vioif0` (MAC `52:54:00:12:34:58`): `ping` gateway
+    + `8.8.8.8`, DNS, HTTPS (`wget`), SSH (host hostfwd `2223`) — OK.
+  - Integrated **at boot**: `scripts/start-rumpnet.sh` (rumpnet translator +
+    devnode `/dev/vioif0`, called as `pre-up`) + `scripts/interfaces.vioif`;
+    `eth0`/netdde kept as fallback (not auto).
+  - **`-m 4G` is mandatory**: with 2 GB the driver does not attach
     (`virtio0: virtqueue 0 for rx0 allocation failed, error code 1`).
-  - **Ne pas basculer à chaud** : `ifconfig /dev/eth0 down` avec rumpnet actif
-    fige la machine (IRQ 11 non acquittée, réseau + console morts, reboot
-    requis) → `scripts/net-switch-vioif.sh` est **verrouillé**.
-  - `glibc ≥ 2.43` requis par les binaires rump.
-- **SMP : non fonctionnel.** `-smp 1` = système complet. `-smp 2` = le boot se
-  bloque dans l'attache AHCI du traducteur **`rumpdisk`**
-  (`ahcisata0: 64-bit DMA`), reproductible sur overlay neuf (autopsie GDB :
-  CPU0 = IT horloge 100 Hz, CPU1 `machine_idle`, aucune tâche utilisateur
-  runnable → `rumpdisk` bloqué dans le noyau ; voir `docs/suivi.md`
-  § *Autopsie du gel `-smp 2`*). L'option de boot `maxcpus=N`/`nosmp` (commit
-  `a4237652`, branche `fork/x86_64`) reste **utile pour forcer le mono-CPU sur
-  une VM multi-cœurs**, mais **ne corrige pas** les races SMP.
+  - **Do not hot-switch**: `ifconfig /dev/eth0 down` with rumpnet active
+    freezes the machine (IRQ 11 unacknowledged, network + console dead,
+    reboot required) → `scripts/net-switch-vioif.sh` is **locked**.
+  - `glibc ≥ 2.43` required by the rump binaries.
+- **SMP: not functional.** `-smp 1` = full system. `-smp 2` = boot hangs in
+  the AHCI attach of the **`rumpdisk`** translator
+  (`ahcisata0: 64-bit DMA`), reproducible on a fresh overlay (GDB autopsy:
+  CPU0 = 100 Hz clock interrupt, CPU1 `machine_idle`, no runnable user task
+  → `rumpdisk` blocked inside the kernel; see `docs/suivi.md`
+  § *Autopsy of the `-smp 2` hang*). The `maxcpus=N`/`nosmp` boot option
+  (commit `a4237652`, branch `fork/x86_64`) remains **useful to force
+  single-CPU mode on a multi-core VM**, but **does not fix** the SMP races.
 
-> **Historique.** Le disque de la VM dev a été corrompu le 17/10
-> (ré-extraction de l'image de base d'un overlay en service) puis reconstruit
-> en copie autonome — voir `docs/suivi.md` § *INCIDENT*.
+> **History.** The dev VM disk was corrupted on 17/10
+> (re-extracting the base image while an overlay was in service) then
+> rebuilt as an autonomous copy — see `docs/suivi.md` § *INCIDENT*.
 
-Détails, méthodes de test et diagnostics : `docs/suivi.md` et les messages de
-commit.
+Details, test methods and diagnostics: `docs/suivi.md` and the commit
+messages.
 
-## Contenu
+## Contents
 
-- `src/` — *non versionné ici* : clones complets de
+- `src/` — *not versioned here*: full clones of
   [`hurd/gnumach`](https://git.savannah.gnu.org/cgit/hurd/gnumach.git),
-  [`hurd/hurd`](https://git.savannah.gnu.org/cgit/hurd/hurd.git) et
+  [`hurd/hurd`](https://git.savannah.gnu.org/cgit/hurd/hurd.git) and
   [`hurd/mig`](https://git.savannah.gnu.org/cgit/hurd/mig.git).
-  Travail sur branches `fork/x86_64` (poussées telles quelles sur GitHub,
-  voir ci-dessous).
-- `vm/` — scripts QEMU (`-M q35` ; e1000 + pcnet + virtio-net ; SSH
+  Work happens on `fork/x86_64` branches (pushed as-is to GitHub,
+  see below).
+- `vm/` — QEMU scripts (`-M q35`; e1000 + pcnet + virtio-net; SSH
   localhost:2222 e1000 / :2223 virtio).
-- `patches/` — patchs consolidés + outillage de build rump (virtio) et noyau
-  de test SMP (`gnumach-smp-test`, ELF avec `debug_info`).
-- `scripts/` — intégration boot vioif : `start-rumpnet.sh`,
+- `patches/` — consolidated patches + rump build tooling (virtio) and the
+  SMP test kernel (`gnumach-smp-test`, ELF with `debug_info`).
+- `scripts/` — vioif boot integration: `start-rumpnet.sh`,
   `interfaces.vioif`, `net-switch-vioif.sh`.
-- `docs/` — notes de suivi (`suivi.md`).
+- `docs/` — follow-up notes (`suivi.md`).
 
-## Branches publiées
+## Published branches
 
-- `main` — ce projet (docs, scripts, patchs).
-- `fork/gnumach-x86_64` — historique gnumach + commits SMP.
-- `fork/hurd-x86_64` — historique hurd + commits (bpf_hdr, login utmp, pcn…).
+- `main` — this project (docs, scripts, patches).
+- `fork/gnumach-x86_64` — gnumach history + SMP commits.
+- `fork/hurd-x86_64` — hurd history + commits (bpf_hdr, login utmp, pcn…).
 
-## Démarrage rapide (hôte Debian)
+## Quick start (Debian host)
 
 ```
 sudo apt install qemu-system-x86 qemu-utils
-# image Debian hurd-amd64 officielle (base, JAMAIS modifiée en place) :
+# official Debian hurd-amd64 image (base, NEVER modified in place):
 # https://cdimage.debian.org/cdimage/ports/latest/hurd-amd64/debian-hurd.img.tar.gz
 
-# 1) créer une copie de travail AUTONOME (sans backing file) :
+# 1) create an AUTONOMOUS working copy (no backing file):
 qemu-img convert -O qcow2 debian-hurd-amd64-*.img hurd-dev.qcow2
 
-# 2) lancer (console pure / headless, -m 4G, ssh localhost:2222) :
-./vm/run-hurd64.sh            # VM dev (disque autonome hurd-dev.qcow2)
-./vm/run-hurd64-smp.sh        # test -smp 2 sur overlay jetable — attendu : échec
-                              #   GDB=1 ajoute -gdb tcp::1234 ; STOP=1 ajoute -S ;
-                              #   FRESH=0 réutilise l'overlay (kernel déjà installé)
-./vm/run-hurd64-vioif.sh      # test vioif (bascule réseau) sur overlay jetable
-                              #   BLK=1 attache un disque virtio-blk secondaire (vd0)
+# 2) launch (pure console / headless, -m 4G, ssh localhost:2222):
+./vm/run-hurd64.sh            # dev VM (autonomous disk hurd-dev.qcow2)
+./vm/run-hurd64-smp.sh        # -smp 2 test on a disposable overlay — expected: failure
+                              #   GDB=1 adds -gdb tcp::1234 ; STOP=1 adds -S ;
+                              #   FRESH=0 reuses the overlay (kernel already installed)
+./vm/run-hurd64-vioif.sh      # vioif test (network switch) on a disposable overlay
+                              #   BLK=1 attaches a secondary virtio-blk disk (vd0)
 ```
 
-> **Sécurité disque.** Ne jamais démarrer l'image de base `debian-hurd-amd64-*.img`
-> en écriture, et ne jamais la ré-extraire/écraser pendant qu'un overlay la
-> référence comme *backing file* (c'est ce qui a corrompu le disque le 17/10).
-> Pour tout essai risqué (bascule réseau, SMP), passer par un overlay jetable
-> (`hurd-*-test.qcow2`), ou `qemu-img snapshot` avant.
+> **Disk safety.** Never boot the base image `debian-hurd-amd64-*.img` in
+> write mode, and never re-extract/overwrite it while an overlay references
+> it as its *backing file* (this is what corrupted the disk on 17/10).
+> For any risky experiment (network switch, SMP), use a disposable overlay
+> (`hurd-*-test.qcow2`), or `qemu-img snapshot` first.
 
-## Images VM
+## VM images
 
-Volontairement **exclues** du dépôt (plusieurs Go) : image de base Debian
-`debian-hurd-amd64-*.img` (lecture seule, ne pas modifier) + copie de travail
-autonome `hurd-dev.qcow2` (voir `.gitignore`).
+Deliberately **excluded** from the repository (several GB): base Debian
+image `debian-hurd-amd64-*.img` (read-only, do not modify) + autonomous
+working copy `hurd-dev.qcow2` (see `.gitignore`).

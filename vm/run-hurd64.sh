@@ -1,16 +1,16 @@
 #!/bin/bash
-# Lance la VM dev Debian/Hurd amd64 64-bit en mode **console pure / headless**
-# (aucun X11 : ni Xorg, ni xdm, ni XFCE).
+# Launch the dev Debian/Hurd amd64 64-bit VM in **pure console / headless**
+# mode (no X11: no Xorg, no xdm, no XFCE).
 #
-#   * disque de travail AUTONOME (défaut: hurd-dev.qcow2, sans backing file) —
-#     ne jamais démarrer l'image de base brute `debian-hurd-amd64-*.img` ;
-#   * `-smp 1` (le SMP reste expérimental, cf. run-hurd64-smp.sh) ;
-#   * `-m 4G` : nécessaire pour que le pilote rump vioif s'attache
-#     (en 2 Go : « virtqueue 0 for rx0 allocation failed »).
+#   * AUTONOMOUS working disk (default: hurd-dev.qcow2, no backing file) —
+#     never boot the raw base image `debian-hurd-amd64-*.img`;
+#   * `-smp 1` (SMP remains experimental, cf. run-hurd64-smp.sh);
+#   * `-m 4G`: required for the rump vioif driver to attach
+#     (with 2 GB: "virtqueue 0 for rx0 allocation failed").
 #
-# Réseau : e1000/netdde -> ssh localhost:2222 ; virtio-net (vioif) -> 2223.
-# Console : VGA texte, capturable via le moniteur QEMU (`screendump`),
-#           socket unix /tmp/hurd-dev-mon (voir docs/suivi.md).
+# Network: e1000/netdde -> ssh localhost:2222 ; virtio-net (vioif) -> 2223.
+# Console: VGA text, capturable via the QEMU monitor (`screendump`),
+#          unix socket /tmp/hurd-dev-mon (see docs/suivi.md).
 #
 # Usage: ./run-hurd64.sh [img.qcow2]
 set -e
@@ -18,10 +18,10 @@ cd "$(dirname "$0")"
 IMG=${1:-hurd-dev.qcow2}
 case "$IMG" in
   *debian-hurd*.img)
-    echo "REFUS: ne pas écrire dans l'image de base ; utiliser une copie qcow2" >&2
+    echo "REFUSED: do not write to the base image; use a qcow2 copy" >&2
     exit 1;;
 esac
-[ -f "$IMG" ] || { echo "image introuvable: $IMG (voir README, 'qemu-img convert')"; exit 1; }
+[ -f "$IMG" ] || { echo "image not found: $IMG (see README, 'qemu-img convert')"; exit 1; }
 MON=${MON:-/tmp/hurd-dev-mon}
 rm -f "$MON"
 exec qemu-system-x86_64 -m 4096 -M q35 --enable-kvm -smp 1 \

@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
-"""Classe l'etat d'une VM QEMU headless par UNE seule lecture de l'ecran VGA.
+"""Classify the state of a headless QEMU VM with a SINGLE read of the VGA screen.
 
-A utiliser en fin de manche (pas en continu !) : chaque lecture `xp` tient le
-BQL de QEMU quelques millisecondes et *desynchronise les vCPU* — un
-echantillonnage serre fausse les mesures des courses SMP (constate en 4e
-passe : 1 gel / 2 avec echantillonnage continu contre 1 gel / 1 sans).
+To be used at the end of a round (not continuously!): each `xp` read holds
+QEMU's BQL for a few milliseconds and *desynchronizes the vCPUs* — tight
+sampling skews SMP race measurements (observed in the 4th pass: 1 hang / 2
+with continuous sampling vs 1 hang / 1 without).
 
-Verdict :
-    BOOT    = le prompt `login:` est present ;
-    WEDGE   = la derniere ligne est `ahcisata0: 64-bit DMA` (gel rumpdisk) ;
-    UNKNOWN = autre (fsck, panic, ...) : voir les 3 dernieres lignes.
+Verdict:
+    BOOT    = the `login:` prompt is present ;
+    WEDGE   = the last line is `ahcisata0: 64-bit DMA` (rumpdisk hang) ;
+    UNKNOWN = other (fsck, panic, ...): see the last 3 lines.
 
-Usage :
+Usage:
     MON=/tmp/hurd-smp-mon python3 vm/vgaprobe.py
 """
 
@@ -35,7 +35,7 @@ def _recv_until_prompt(sock):
 
 
 def snapshot():
-    """Retourne les lignes non vides de l'ecran VGA courant."""
+    """Return the non-empty lines of the current VGA screen."""
     sock = socket.socket(socket.AF_UNIX)
     sock.settimeout(15)
     sock.connect(MON)

@@ -1,14 +1,13 @@
 From 12bd028b2dd20b80dfe5b14932c41c9cce1019bc Mon Sep 17 00:00:00 2001
 From: ben <ben@localhost>
 Date: Fri, 16 Oct 2026 13:54:32 +0200
-Subject: [PATCH] =?UTF-8?q?smp:=20propage=20la=20d=C3=A9gradation=20au=20c?=
- =?UTF-8?q?ompteur=20global=20(smp=5Fset=5Fnumcpus)?=
+Subject: [PATCH] smp: propagate the degradation to the global counter (smp_set_numcpus)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-Sinon scheduler/pmap/ddb continuent d'adresser les AP morts via
-smp_get_numcpus() et le boot re-pend plus tard sur une IPI sans ack.
+Otherwise scheduler/pmap/ddb keep addressing the dead APs via
+smp_get_numcpus() and the boot hangs later on an unacked IPI.
 ---
  i386/i386/mp_desc.c | 6 +++++-
  1 file changed, 5 insertions(+), 1 deletion(-)

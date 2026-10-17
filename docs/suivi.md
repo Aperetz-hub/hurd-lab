@@ -1,892 +1,896 @@
-# Fork GNU Hurd x86_64 — base locale
+# GNU Hurd x86_64 fork — local base
 
-Branches locales `fork/x86_64` créées sur `mig`, `gnumach`, `hurd` (upstream = savannah, master du 16/10/2026).
+Local branches `fork/x86_64` created on `mig`, `gnumach`, `hurd` (upstream = savannah, master of 16/10/2026).
 
-## État constaté (audit 16/10/2026)
+## Observed state (audit 16/10/2026)
 
-- x86_64 boot sous QEMU q35 + e1000 + rumpdisk, `noide`. Image testée : `~/hurd-fork/vm/debian-hurd-amd64-*.img`.
-- `gnumach/x86_64/` = shim sur `i386/i386/` (symlink `x86_64/x86_64 -> ../i386/i386`).
-  `Makefrag.am` 64-bit réutilise `i386/i386at/*`. Flags : `-mcmodel=kernel -mno-red-zone`, `KERNEL_MAP_BASE=0xffffffff80000000`.
-- SMP : code présent (`i386/i386/smp.c`, `apic.c`, `cpuboot.S` x2, `acpi_parse_apic.c`, `ioapic.c`) mais déclaré cassé (`configfrag-first.ac` : `Multiprocessor support is still broken`, défaut `NCPUS=1`).
-- MIG : générique, `cpu.sym` gère LP64 via `sizeof(long/uintptr_t`. Pas de dir arch.
-- `hurd/` : ~37 `#ifdef __x86_64__` seulement. Points 64-bit restants : `exec/elfcore.c:102`, `rumpnet/net-rump.c:128 bpf_hdr`, `utils/login.c:168 utmp`, `procfs/cpuid`.
-- rump : `rumpdisk` (ahcisata/piixide/ata + usb) et `rumpnet` (wm Intel PRO/1000 uniquement, pas de virtio-net). `RUMP_NCPU=1` forcé dans les deux `main.c`.
-- `noide` : aucune occurrence dans le code, c'est un arg boot + garde `sd/hd/ud` dans `rumpdisk/block-rump.c`.
+- x86_64 boots under QEMU q35 + e1000 + rumpdisk, `noide`. Image tested: `~/hurd-fork/vm/debian-hurd-amd64-*.img`.
+- `gnumach/x86_64/` = shim over `i386/i386/` (symlink `x86_64/x86_64 -> ../i386/i386`).
+  The 64-bit `Makefrag.am` reuses `i386/i386at/*`. Flags: `-mcmodel=kernel -mno-red-zone`, `KERNEL_MAP_BASE=0xffffffff80000000`.
+- SMP: code exists (`i386/i386/smp.c`, `apic.c`, `cpuboot.S` x2, `acpi_parse_apic.c`, `ioapic.c`) but is declared broken (`configfrag-first.ac`: `Multiprocessor support is still broken`, default `NCPUS=1`).
+- MIG: generic, `cpu.sym` handles LP64 via `sizeof(long/uintptr_t`. No arch dir.
+- `hurd/`: only ~37 `#ifdef __x86_64__`. Remaining 64-bit issues: `exec/elfcore.c:102`, `rumpnet/net-rump.c:128 bpf_hdr`, `utils/login.c:168 utmp`, `procfs/cpuid`.
+- rump: `rumpdisk` (ahcisata/piixide/ata + usb) and `rumpnet` (wm Intel PRO/1000 only, no virtio-net). `RUMP_NCPU=1` forced in both `main.c`.
+- `noide`: no occurrence in the code; it is a boot argument + a `sd/hd/ud` guard in `rumpdisk/block-rump.c`.
 
-## Scripts QEMU
+## QEMU scripts
 
-- `~/hurd-fork/vm/run-hurd64.sh` : boot standard 2G q35 e1000, ssh 2222.
-- `~/hurd-fork/vm/run-hurd64-smp.sh` : test `-smp 2`, ssh 2223, snapshot on.
+- `~/hurd-fork/vm/run-hurd64.sh`: standard 2G q35 e1000 boot, ssh 2222.
+- `~/hurd-fork/vm/run-hurd64-smp.sh`: `-smp 2` test, ssh 2223, snapshot on.
 
-## Roadmap fork proposée
+## Proposed fork roadmap
 
-1. P0 — Harnais : scripts QEMU + `ssh -p 2222 root@localhost`, doc test translator (`settrans`, `fsysopts`, `showtrans`, `rpctrace`).
-2. P1 — Correctness x86_64 : `elfcore`, `bpf_hdr`, `login utmp`, test `qemu-system-x86_64` en CI.
-3. P2 — rumpnet : ajouter `virtio-net` à `rumpnet/Makefile`, bench e1000 vs virtio.
-4. P3 — SMP : timeout boot AP (`smp.c`), tests `qemu -smp 2`, rendre `ipc/vm` MP-safe. Ne pas activer `NCPUS>1` par défaut avant.
-5. P4 — rumpdisk : option `--no-ide-probe`, clarifier garde sd/hd.
+1. P0 — Harness: QEMU scripts + `ssh -p 2222 root@localhost`, translator test doc (`settrans`, `fsysopts`, `showtrans`, `rpctrace`).
+2. P1 — x86_64 correctness: `elfcore`, `bpf_hdr`, `login utmp`, `qemu-system-x86_64` test in CI.
+3. P2 — rumpnet: add `virtio-net` to `rumpnet/Makefile`, bench e1000 vs virtio.
+4. P3 — SMP: AP boot timeout (`smp.c`), `qemu -smp 2` tests, make `ipc/vm` MP-safe. Do not enable `NCPUS>1` by default before that.
+5. P4 — rumpdisk: `--no-ide-probe` option, clarify the sd/hd guard.
 
-## Suivi fork (16/10/2026)
+## Fork follow-up (16/10/2026)
 
-- `hurd/fork/x86_64` : `5636dd8` bpf_hdr sec/usec, `b9bbcf5` login utmp saturant
-  (tests layout/time_t vérifiés OK, scripts temporaires nettoyés).
-- `gnumach/fork/x86_64` : `cfe04a2` SMP timeout, boot dégrade BSP-only au lieu de
-  `while(1)`. À tester : `run-hurd64-smp.sh` avec noyau rebuildé en VM.
-- `mig` : build hôte OK (cpu.h LP64 correct, répertoire temporaire nettoyé).
-  `make check` 7 FAIL attendus sans `gnumach-dev` (stubs veulent `<mach/boolean.h>`).
+- `hurd/fork/x86_64`: `5636dd8` bpf_hdr sec/usec, `b9bbcf5` saturating login utmp
+  (layout/time_t tests verified OK, temporary scripts cleaned up).
+- `gnumach/fork/x86_64`: `cfe04a2` SMP timeout, boot degrades to BSP-only instead of
+  `while(1)`. To test: `run-hurd64-smp.sh` with the kernel rebuilt in the VM.
+- `mig`: host build OK (cpu.h LP64 correct, temporary directory cleaned up).
+  `make check` produces 7 expected FAILs without `gnumach-dev` (stubs want `<mach/boolean.h>`).
 
-## Tests noyau (16/10/2026, VM debian-hurd-amd64, q35/e1000)
+## Kernel tests (16/10/2026, debian-hurd-amd64 VM, q35/e1000)
 
-- Noyau `cfe04a2` (`--enable-ncpus=2`, 3.5M) : **boote + SSH OK en `-smp 1`**
-  (userland complet). Preuve : le patch ne casse pas le chemin UP.
-- Même noyau en `-smp 2` : **bloqué après phase rump/ahcisata** (`ahcisata0:
-  64-bit DMA` figé, pas de SSH). Cause probable : AP démarrés mais SMP
-  globalement bancal (races connues), ou IPI vers AP mort plus tard
-  (pmap/sched utilisent `smp_get_numcpus()` global).
-- Fixup `12bd028` : `smp_set_numcpus()` propagé (dégradation globale).
-  Testé en `-smp 2` : **même blocage après `ahcisata0: 64-bit DMA`**.
-  Capture VGA à 1s (`capture VGA (non conservée)`) : `Sending IPIs from BSP APIC ID 0...`
-  puis `AP=(1) paging/mpdesc/gdt/... done` + `LAPIC timer configured on
-  cpu 1` → **SIPIs OK, l'AP démarre, notre chemin de dégradation ne se
-  déclenche pas**. Le hang vient des races SMP en aval (locking incomplet,
-  cf. `#warning SMP support missing` dans `io_perm.c`, `pcb.c`), pas de
-  notre patch. Vrai SMP = chantier amont (verrous fins), hors portée d'un
-  quick-fix.
-- Leçons VM : `/tmp` vidé à chaque reboot → travailler dans `~` ;
-  `snapshot=on` jette tout à l'arrêt QEMU ; image de base persistante OK ;
-  `screendump` via monitor HMP pour le boot (pas de console série Mach).
+- Kernel `cfe04a2` (`--enable-ncpus=2`, 3.5M): **boots + SSH OK at `-smp 1`**
+  (complete userland). Evidence: the patch does not break the UP path.
+- Same kernel at `-smp 2`: **hangs after the rump/ahcisata phase** (`ahcisata0:
+  64-bit DMA` frozen, no SSH). Likely cause: APs started but SMP is
+  globally shaky overall (known races), or later IPIs going to dead APs
+  (pmap/sched use the global `smp_get_numcpus()`).
+- Fixup `12bd028`: `smp_set_numcpus()` propagated (global degradation).
+  Tested at `-smp 2`: **same hang after `ahcisata0: 64-bit DMA`**.
+  VGA capture at 1s (`VGA capture (not kept)`): `Sending IPIs from BSP APIC ID 0...`
+  then `AP=(1) paging/mpdesc/gdt/... done` + `LAPIC timer configured on
+  cpu 1` → **SIPIs OK, the AP starts, our degradation path does not
+  trigger**. The hang comes from downstream SMP races (incomplete locking,
+  cf. `#warning SMP support missing` in `io_perm.c`, `pcb.c`), not from
+  our patch. Real SMP = upstream work (fine-grained locks), out of scope for a
+  quick fix.
+- VM lessons: `/tmp` is wiped on every reboot → work in `~`;
+  `snapshot=on` discards everything at QEMU shutdown; persistent base image OK;
+  `screendump` via the HMP monitor for boot (no Mach serial console).
 
-## Réseau : pcn (16/10/2026, VM dev overlay, QEMU pcnet ajouté)
+## Network: pcn (16/10/2026, dev VM overlay, QEMU pcnet added)
 
-- `7b5ab52` lie `rumpdev_pci_if_pcn` (déjà packagé) à côté de `wm`. Build OK
-  dans la VM, les deux `.so` liés. Aucun nom en dur dans `net-rump.c`.
-- Test live : le driver **s'attache** (`pcn0 at pci0 dev 3: AMD PCnet-PCI`,
-  syslog) mais lit **MAC `ff:ff:ff:ff:ff:ff`** → lectures PIO (ports I/O)
-  qui rendent `0xFF`, interface inutilisable.
-- Hypothèse : le chemin PIO de rump PCI (`libpciaccess` → `pci-arbiter`)
-  est cassé sous Hurd ; `wm` (MMIO) et `rumpdisk` AHCI (MMIO) marchent.
-- Leçon test : ne jamais lancer une instance rumpnet avec `wm` lié quand
-  `e1000` est actif (`netdde`) — le probe wm réclame le NIC et tue le réseau
-  (récupéré par `system_reset`). Tester avec variante pcn-only.
-- Conséquence : **prioriser `vioif`/virtio-net (MMIO)** plutôt que pcn.
-  `libvirtio_if_vioif` + `libpci_virtio` existent dans `rumpkernel/src-netbsd`
-  (branche `kernel-src`) mais ne sont pas packagés par Debian → builder les
-  libs rump, les lier dans `RUMPLIBS`, tester avec `-device virtio-net-pci`.
+- `7b5ab52` links `rumpdev_pci_if_pcn` (already packaged) next to `wm`. Build OK
+  in the VM, both `.so` linked. No hard-coded names in `net-rump.c`.
+- Live test: the driver **attaches** (`pcn0 at pci0 dev 3: AMD PCnet-PCI`,
+  syslog) but reads MAC **`ff:ff:ff:ff:ff:ff`** → PIO (I/O port) reads
+  return `0xFF`, interface unusable.
+- Hypothesis: the rump PCI PIO path (`libpciaccess` → `pci-arbiter`)
+  is broken under Hurd; `wm` (MMIO) and `rumpdisk` AHCI (MMIO) work.
+- Test lesson: never launch a rumpnet instance with `wm` linked while
+  `e1000` is active (`netdde`) — the wm probe claims the NIC and kills the network
+  (recovered via `system_reset`). Test with a pcn-only variant.
+- Consequence: **prioritize `vioif`/virtio-net (MMIO)** over pcn.
+  `libvirtio_if_vioif` + `libpci_virtio` exist in `rumpkernel/src-netbsd`
+  (branch `kernel-src`) but are not packaged by Debian → build the
+  rump libs, link them into `RUMPLIBS`, test with `-device virtio-net-pci`.
 
-## virtio-net (`vioif`) rump sur Hurd (17/10/2026) — crash corrigé
+## rump virtio-net (`vioif`) on Hurd (17/10/2026) — crash fixed
 
-- Contexte : `libvirtio_if_vioif` + `libpci_virtio` ne sont pas packagés par
-  Debian → buildés à partir de `nbsrc25` (NetBSD 2025-01, commit `4a1a4e8`).
-  Recette : `patches/build/build-virtio.sh` ; relink :
-  `patches/build/link-vioif.sh` (binaire non-PIE pour symboliser les crashes).
-- **Bug** : après un attachement correct de `vioif0` (MAC `52:54:00:12:34:58`,
-  virtqueues rx/tx/ctrl, IRQ 20), SIGSEGV au `device_open` (chemin
+- Context: `libvirtio_if_vioif` + `libpci_virtio` are not packaged by
+  Debian → built from `nbsrc25` (NetBSD 2025-01, commit `4a1a4e8`).
+  Recipe: `patches/build/build-virtio.sh`; relink:
+  `patches/build/link-vioif.sh` (non-PIE binary so crashes symbolize).
+- **Bug**: after a correct `vioif0` attach (MAC `52:54:00:12:34:58`,
+  rx/tx/ctrl virtqueues, IRQ 20), SIGSEGV at `device_open` (path
   `up_interface` → `rump_sys_ioctl(SIOCSIFFLAGS)` → `vioif_init` →
   `vioif_rx_filter` → `vioif_set_rx_filter` → `vioif_ctrl_acquire` →
-  `curlwp`) sur `mov %gs:0xac0,%rax` (base `%gs` = 0, sous-code 0xAC0).
-- **Cause** : nos objets étaient compilés avec le `<machine/cpu.h>` de l'arch,
-  où `curlwp == x86_curlwp()` (accès `%gs`). Or sous Hurd, rump n'utilise
-  **pas** `%gs` (glibc réserve `%fs` pour le TLS) : il faut
-  `curlwp == rump_curlwp_fast()` (mécanisme *hypercall*,
-  `rump_lwproc_curlwp_hypercall()`), tel que défini par le
-  `sys/rump/include/machine/cpu.h`. L'ordre d'include upstream
-  (`sys/rump/Makefile.rump`) met `-I${RUMPTOP}/include` **en premier** ; notre
-  recette mettait `-I$D` (build dir, `machine -> arch`) en premier → mauvais
-  `cpu.h`. (`-I$D` d'abord avait été choisi pour que `<machine/intr.h>` =
-  arch, car `x86/pci_machdep.h` exige `intr_handle_t`.)
-- **Fix** : interposer `$HOME/ovr/machine/cpu.h -> rump` et
-  `$HOME/ovr/machine/intr.h -> arch`, `ovr` en tête du `-I`, +
-  `-D_RUMPKERNEL`. Vérification : `if_vioif.pico` n'a plus aucune référence
-  `%gs:` ni `x86_curlwp`, et appelle `rump_lwproc_curlwp_hypercall`.
-- **Résultat** : `device_open("vioif0") -> err=0` via le translator rumpnet,
-  attache stable, plus aucun crash (backtrace sous gdb). Étape suivante :
-  `pfinet` sur le device / démarrage au boot.
-- Méthode : lancer le translator sous gdb (`settrans -ac NODE wrapper-gdb`).
-  **Attention** : `settrans` sans `-a` = translator *passif* (démarre
-  seulement à l'ouverture du nœud). Nettoyer les nœuds translator laissés :
-  `find /` les ouvre et peut figer la VM.
+  `curlwp`) on `mov %gs:0xac0,%rax` (`%gs` base = 0, subcode 0xAC0).
+- **Root cause**: our objects were compiled with the arch's `<machine/cpu.h>`,
+  where `curlwp == x86_curlwp()` (`%gs` access). But under Hurd, rump does
+  **not** use `%gs` (glibc reserves `%fs` for TLS): it needs
+  `curlwp == rump_curlwp_fast()` (*hypercall* mechanism,
+  `rump_lwproc_curlwp_hypercall()`), as defined by the
+  `sys/rump/include/machine/cpu.h`. The upstream include order
+  (`sys/rump/Makefile.rump`) puts `-I${RUMPTOP}/include` **first**; our
+  recipe put `-I$D` (build dir, `machine -> arch`) first → wrong
+  `cpu.h`. (`-I$D` first had been chosen so that `<machine/intr.h>` = arch,
+  because `x86/pci_machdep.h` requires `intr_handle_t`.)
+- **Fix**: interpose `$HOME/ovr/machine/cpu.h -> rump` and
+  `$HOME/ovr/machine/intr.h -> arch`, `ovr` first in the `-I` list, +
+  `-D_RUMPKERNEL`. Verification: `if_vioif.pico` no longer has any
+  `%gs:` or `x86_curlwp` reference, and calls `rump_lwproc_curlwp_hypercall`.
+- **Result**: `device_open("vioif0") -> err=0` via the rumpnet translator,
+  stable attach, no more crashes (backtrace under gdb). Next step:
+  `pfinet` on the device / starting it at boot.
+- Method: run the translator under gdb (`settrans -ac NODE wrapper-gdb`).
+  **Caution**: `settrans` without `-a` = *passive* translator (starts
+  only when the node is opened). Clean up leftover translator nodes:
+  `find /` opens them and can freeze the VM.
 
-## pfinet sur vioif0 — test live (17/10/2026)
+## pfinet on vioif0 — live test (17/10/2026)
 
-- Translator rumpnet (`rumpnet-vioif-test`) + devnode sur `/dev/vioif0` :
-  `settrans -ac /dev/rumpnet /home/demo/rumpnet-vioif.sh` puis
+- rumpnet translator (`rumpnet-vioif-test`) + devnode on `/dev/vioif0`:
+  `settrans -ac /dev/rumpnet /home/demo/rumpnet-vioif.sh` then
   `settrans -c /dev/vioif0 /hurd/devnode -M /dev/rumpnet vioif0`.
-  `open-dev /dev/vioif0 eth` → `device_open("eth") -> err=0` (pfinet ouvre le
-  nœud puis `device_open("eth")`, cf. `pfinet/ethernet.c`).
-- **Bascule sans redémarrer pfinet** (méthode retenue) : `ifconfig` (Hurd)
-  ajoute une interface à l'instance pfinet vivante (pfinet gère N interfaces).
-  Séquence validée (`scripts/net-switch-vioif.sh`) :
-  1. `pkill -f dhclient` (sinon dhclient remet `eth0` up) ;
+  `open-dev /dev/vioif0 eth` → `device_open("eth") -> err=0` (pfinet opens the
+  node then calls `device_open("eth")`, cf. `pfinet/ethernet.c`).
+- **Switch without restarting pfinet** (chosen method): `ifconfig` (Hurd)
+  adds an interface to the live pfinet instance (pfinet manages N interfaces).
+  Validated sequence (`scripts/net-switch-vioif.sh`):
+  1. `pkill -f dhclient` (otherwise dhclient brings `eth0` back up) ;
   2. `ifconfig /dev/eth0 down` ;
   3. `ifconfig /dev/vioif0 10.0.2.15 netmask 255.255.255.0 up`.
-  Résultat : **ping gw 10.0.2.2 + DNS 10.0.2.3 OK**, et **SSH via hostfwd
-  hôte 2223 OK** (TX+RX+TCP+résolution, single-interface) → driver virtio-net
-  pleinement fonctionnel. Rollback auto (watchdog `KEEP`) validé.
-- **Limite** : la route par défaut reste liée à `eth0`. `fsysopts
-  /servers/socket/2 --gateway 10.0.2.2` → `EBUSY` (interfaces même
-  sous-réseau) ; l'accès externe (hors 10.0.2.0/24) échoue donc après bascule.
-- **Piège** : redémarrer pfinet (`settrans -g` puis `settrans -ac` sur
-  `/servers/socket/2`) **fige** : `ifconfig /dev/vioif0` bloque indéfiniment
-  (l'ancien pfinet garde le device ouvert). Ne pas redémarrer pfinet à chaud ;
-  utiliser `ifconfig` sur l'instance vivante, ou configurer vioif dès le boot.
-  Récupération : reboot (mais `/etc/init.d/networking` stop → `dhclient -r`
-  peut figer le shutdown sans réseau → `system_reset` + fsck).
-## virtio-net (vioif) : intégration au boot (17/10/2026) — FAIT, validé
+  Result: **ping gw 10.0.2.2 + DNS 10.0.2.3 OK**, and **SSH via host
+  hostfwd 2223 OK** (TX+RX+TCP+resolution, single-interface) → virtio-net driver
+  fully functional. Automatic rollback (`KEEP` watchdog) validated.
+- **Limit**: the default route stays bound to `eth0`. `fsysopts
+  /servers/socket/2 --gateway 10.0.2.2` → `EBUSY` (interfaces in the
+  same subnet); external access (outside 10.0.2.0/24) therefore fails after the switch.
+- **Trap**: restarting pfinet (`settrans -g` then `settrans -ac` on
+  `/servers/socket/2`) **freezes** everything: `ifconfig /dev/vioif0` blocks forever
+  (the old pfinet keeps the device open). Do not restart pfinet at runtime;
+  use `ifconfig` on the live instance, or configure vioif at boot.
+  Recovery: reboot (but `/etc/init.d/networking` stop → `dhclient -r`
+  can freeze shutdown without network → `system_reset` + fsck).
 
-- Fichiers (dans `scripts/`) :
-  - `start-rumpnet.sh` → installé `/usr/local/sbin/start-rumpnet.sh` : démarre
-    le translator rumpnet + le devnode `/dev/vioif0` (idempotent, log
+## virtio-net (vioif): integration at boot (17/10/2026) — DONE, validated
+
+- Files (in `scripts/`):
+  - `start-rumpnet.sh` → installed as `/usr/local/sbin/start-rumpnet.sh`: starts
+    the rumpnet translator + the devnode `/dev/vioif0` (idempotent, log
     `/tmp/start-rumpnet.log`).
-  - `interfaces.vioif` → `/etc/network/interfaces` : `auto /dev/vioif0` avec
-    `pre-up /usr/local/sbin/start-rumpnet.sh` ; `eth0` conservé en secours
-    (non auto) ; sauvegarde `/etc/network/interfaces.eth0.bak`.
-- **Résultat après reboot** : boot propre (pas de hang au shutdown car `eth0`
-  n'est plus `auto` → plus de `dhclient -r` sur un réseau mort). L'interface
-  unique est `/dev/vioif0` (MAC `52:54:00:12:34:58`) et `pfinet` a bien
-  `--gateway=10.0.2.2` (au boot pfinet est neuf → **pas de `EBUSY`**).
-  Vérifié : `ping 10.0.2.2`, `ping 8.8.8.8`, DNS (`getent ahostsv4`),
-  HTTPS (`wget https://example.com` rc=0), SSH via hostfwd hôte 2223.
-- **Caveat** : ne pas `ifup /dev/eth0` sur un système vivant en vioif : la
-  méthode `dhcp`/`fsysopts` de ifup reconstruit les options pfinet et **perd
-  `--gateway`** (plus d'accès externe) en plus d'ajouter une 2e interface.
-  En cas de besoin, rebooter (l'état de boot est propre) ou refixer la route.
-- Récupération si échec : accès console (moniteur QEMU → `screendump`/
+  - `interfaces.vioif` → `/etc/network/interfaces`: `auto /dev/vioif0` with
+    `pre-up /usr/local/sbin/start-rumpnet.sh` ; `eth0` kept as fallback
+    (not auto) ; backup `/etc/network/interfaces.eth0.bak`.
+- **Result after reboot**: clean boot (no hang at shutdown because `eth0`
+  is no longer `auto` → no more `dhclient -r` on a dead network). The single
+  interface is `/dev/vioif0` (MAC `52:54:00:12:34:58`) and `pfinet` does have
+  `--gateway=10.0.2.2` (at boot pfinet is fresh → **no `EBUSY`**).
+  Verified: `ping 10.0.2.2`, `ping 8.8.8.8`, DNS (`getent ahostsv4`),
+  HTTPS (`wget https://example.com` rc=0), SSH via host hostfwd 2223.
+- **Caveat**: do not `ifup /dev/eth0` on a live vioif system: the
+  `dhcp`/`fsysopts` method of ifup rebuilds the pfinet options and **loses
+  `--gateway`** (no more external access) in addition to adding a 2nd interface.
+  If needed, reboot (the boot state is clean) or re-fix the route.
+- Recovery on failure: console access (QEMU monitor → `screendump`/
   `sendkey`) → `sudo cp /etc/network/interfaces.eth0.bak
   /etc/network/interfaces && sudo ifup /dev/eth0 && sudo reboot`.
 
-## Reprise `-smp 2` (17/10/2026) — nouvelle observation
+## Resuming `-smp 2` (17/10/2026) — new observation
 
-> ⚠️ **Nuance (voir § *Autopsie du gel `-smp 2`*, 2e/3e passes)** : les mesures
-> « CPU0 spin utilisateur `RIP=0x5225ac` » ci-dessous ont été prises **avec le
-> stub gdb (`-s`) et sans reprise vérifiée** → elles sont faussées par la mise
-> **en pause** de la VM (session gdb terminée sans `detach`, `info status` =
-> `paused`). Sur overlay neuf, le blocage réel se produit **plus tôt**, dans
-> l'attache AHCI de `rumpdisk` (`ahcisata0: 64-bit DMA`) — et il est
-> **intermittent** (voir 3e passe).
+> ⚠️ **Nuance (see § *Autopsy of the `-smp 2` hang*, 2nd/3rd passes)**: the
+> "CPU0 userspace spin `RIP=0x5225ac`" measurements below were taken **with
+> the gdb stub (`-s`) and without verified resumption** → they are skewed by
+> **pausing** the VM (gdb session exited without `detach`, `info status` =
+> `paused`). On a fresh overlay, the real hang happens **earlier**, in the
+> AHCI attach of `rumpdisk` (`ahcisata0: 64-bit DMA`) — and it is
+> **intermittent** (see 3rd pass).
 
-- Le noyau par défaut de la VM dev (entrée GRUB 0) est déjà
-  `gnumach-smp-test.gz` : `-smp 1` = système fonctionnel (réseau vioif +
-  internet). Le test `-smp 2` = relancer QEMU avec `-smp 2` (même disque,
-  même noyau) — de préférence sur un overlay jetable (cf. README).
-  *(Vérifié depuis, 3e passe : l'image de base `hurd-dev.qcow2` démarre en fait
-  le **stock**, `/boot/gnumach-1.8-amd64-up.gz` = 236 555 o, md5
-  `58334bef…` ; le noyau **fork** (1 611 776 o) est installé dans les overlays
-  — `hurd-smp-test.qcow2`, `ovl-stock-smp2.qcow2` — cf. « Identité des
-  noyaux ».)*
-- **Observation révisée** : en `-smp 2` le boot va **plus loin** que l'ancien
-  « figé après `ahcisata0: 64-bit DMA` ». (Mesure faite à l'époque avec X
-  actif ; le projet est passé depuis en **console pure, sans X**.) Le boot
-  progresse jusqu'au login mais :
-  - **le réseau ne monte pas** (ni 2222 ni 2223, `pfinet` inopérant) ;
-  - **CPU0 reste bloqué en espace utilisateur** : `RIP=0x5225ac` (`CPL=3`)
-    constant sur plusieurs échantillons → spin utilisateur (libpthread/glibc
-    ou IPC noyau), et **CPU1 est idle** (`machine_idle`, `HLT=1`).
-  ⇒ c'est un **soft-wedge** (spin), pas une boucle noyau unique. Cohérent avec
-    les races SMP amont (verrous fins manquants). Pas de quick-fix.
-- **Diagnostic sans gdb** (absent de l'hôte) : HMP
-  `cpu N` + `info registers` pour échantillonner `RIP` par CPU. Symboles :
+- The dev VM's default kernel (GRUB entry 0) is already
+  `gnumach-smp-test.gz`: `-smp 1` = working system (vioif network +
+  internet). The `-smp 2` test = restart QEMU with `-smp 2` (same disk,
+  same kernel) — preferably on a disposable overlay (cf. README).
+  *(Verified since, 3rd pass: the base image `hurd-dev.qcow2` actually boots
+  the **stock** kernel, `/boot/gnumach-1.8-amd64-up.gz` = 236,555 bytes, md5
+  `58334bef…` ; the **fork** kernel (1,611,776 bytes) is installed in the overlays
+  — `hurd-smp-test.qcow2`, `ovl-stock-smp2.qcow2` — cf. "Kernel identities".)*
+- **Revised observation**: at `-smp 2` the boot goes **further** than the old
+  "frozen after `ahcisata0: 64-bit DMA`". (Measurement made at the time with X
+  active; the project has switched since to **pure console, no X**.) The boot
+  progresses to the login prompt but:
+  - **the network does not come up** (neither 2222 nor 2223, `pfinet` useless) ;
+  - **CPU0 stays stuck in userspace**: `RIP=0x5225ac` (`CPL=3`)
+    constant across several samples → user spin (libpthread/glibc
+    or kernel IPC), and **CPU1 is idle** (`machine_idle`, `HLT=1`).
+  ⇒ this is a **soft-wedge** (spin), not a single kernel loop. Consistent with
+    upstream SMP races (missing fine-grained locks). No quick fix.
+- **Diagnosis without gdb** (absent from the host): HMP
+  `cpu N` + `info registers` to sample `RIP` per CPU. Symbols:
   `addr2line -e /home/ben/hurd-fork/patches/gnumach-smp-test -f -p 0x...`
-  (ELF avec `debug_info`). `-s` (gdbserver tcp:1234) démarre la VM *paused* →
-  faire `cont` avant d'observer.
-- **Récupération** : le guest SMP wedgé ne s'éteint pas proprement → kill QEMU
-  → le fs devient sale → au reboot, prompt maintenance → `Enter` →
-  `fsck -y /dev/wd0s2` → `Ctrl-D` (le boot reprend).
-- Rappel : `eth0`/netdde reste un secours ; en `-smp 1` la VM fonctionne
-  (réseau vioif + internet).
+  (ELF with `debug_info`). `-s` (gdbserver tcp:1234) starts the VM *paused* →
+  run `cont` before observing.
+- **Recovery**: the wedged SMP guest does not shut down cleanly → kill QEMU
+  → fs becomes dirty → at reboot, maintenance prompt → `Enter` →
+  `fsck -y /dev/wd0s2` → `Ctrl-D` (boot resumes).
+- Reminder: `eth0`/netdde remains a fallback; at `-smp 1` the VM works
+  (vioif network + internet).
 
-## Option de boot `maxcpus=N` / `nosmp` (17/10/2026) — conservée
+## Boot option `maxcpus=N` / `nosmp` (17/10/2026) — kept
 
-- **Rôle** : option de ligne de commande noyau (multiboot) qui **plafonne le
-  nombre de CPU utilisés** au démarrage :
-  - `nosmp` → au plus 1 CPU ;
-  - `maxcpus=N` → au plus N CPU.
-  Implémentée dans `i386/i386/smp.c::smp_data_init()` (commit `a4237652`,
-  branche git `fork/x86_64`), elle lit `kernel_cmdline`. Elle permet donc de
-  **forcer le mode mono-CPU sur une VM multi-cœurs** (`-smp N`), sans
-  recompiler le noyau ni changer le `-smp` de QEMU.
-- **Usage** : ajouter `nosmp` (ou `maxcpus=1`) à la ligne
-  `multiboot /boot/gnumach… root=part:2:device:wd0` de GRUB. Confirmation au
-  boot : `SMP: maxcpus=N, limite le noyau a N CPU sur M`.
-- **Ce que ça fait (et ne fait pas)** : `maxcpus=1` **évite le gel la plupart
-  du temps** — vérifié (3e passe, gdb : `smp_info.num_cpus = 1`, AP jamais
-  démarré) : `-smp 2` **+ `maxcpus=1` boote 5 fois sur 6**, alors que `-smp 2`
-  **sans option gèle 4 fois sur 4**. Le **démarrage de l'AP est donc le
-  déclencheur principal** (le *build SMP* seul, en `-smp 1`, ne gèle jamais).
-  Il subsiste une **intermittence résiduelle** (1 gel / 6 avec `maxcpus=1`).
-  L'option est un contournement utile, pas un correctif.
-- **Statut** : **conservée**. Arbre de travail propre, commit poussé sur
-  `remotes/github/fork/x86_64`. Aucun revert.
+- **Role**: kernel command-line (multiboot) option that **caps the number of
+  CPUs used** at startup:
+  - `nosmp` → at most 1 CPU ;
+  - `maxcpus=N` → at most N CPUs.
+  Implemented in `i386/i386/smp.c::smp_data_init()` (commit `a4237652`,
+  git branch `fork/x86_64`), it reads `kernel_cmdline`. It therefore allows
+  **forcing single-CPU mode on a multi-core VM** (`-smp N`), without
+  recompiling the kernel or changing QEMU's `-smp`.
+- **Usage**: add `nosmp` (or `maxcpus=1`) to the GRUB line
+  `multiboot /boot/gnumach… root=part:2:device:wd0`. Boot-time confirmation:
+  `SMP: maxcpus=N, limite le noyau a N CPU sur M`.
+- **What it does (and does not do)**: `maxcpus=1` **avoids the hang most of
+  the time** — verified (3rd pass, gdb: `smp_info.num_cpus = 1`, AP never
+  started): `-smp 2` **+ `maxcpus=1` boots 5 times out of 6**, while `-smp 2`
+  **without the option hangs 4 times out of 4**. **The AP startup is therefore
+  the main trigger** (the SMP *build* alone, at `-smp 1`, never hangs).
+  There remains a **residual intermittence** (1 hang / 6 with `maxcpus=1`).
+  The option is a useful workaround, not a fix.
+- **Status**: **kept**. Clean working tree, commit pushed to
+  `remotes/github/fork/x86_64`. No revert.
 
-## Autopsie du gel `-smp 2` (17/10/2026) — GDB sur QEMU
+## Autopsy of the `-smp 2` hang (17/10/2026) — GDB over QEMU
 
-Méthode : `vm/run-hurd64-smp.sh` accepte désormais `GDB=1` (stub QEMU
-`-gdb tcp::1234`), `STOP=1` (`-S`), `FRESH=0` (réutiliser l'overlay). gdb est
-absent de l'hôte et `sudo` est bloqué → gdb récupéré **sans root** via
-`apt-get download gdb` + `dpkg-deb -x` (idem ses libs : libbabeltrace, libipt,
-libsource-highlight, libdebuginfod) puis
+Method: `vm/run-hurd64-smp.sh` now accepts `GDB=1` (QEMU stub
+`-gdb tcp::1234`), `STOP=1` (`-S`), `FRESH=0` (reuse the overlay). gdb is
+absent from the host and `sudo` is blocked → gdb fetched **without root** via
+`apt-get download gdb` + `dpkg-deb -x` (same for its libs: libbabeltrace, libipt,
+libsource-highlight, libdebuginfod) then
 `LD_LIBRARY_PATH=/tmp/gdbroot/usr/lib/x86_64-linux-gnu /tmp/gdbroot/usr/bin/gdb
-/tmp/gnumach-new` (noyau fork, ELF avec `debug_info`).
+/tmp/gnumach-new` (fork kernel, ELF with `debug_info`).
 
-**Piège méthodologique majeur (corrigé en 3e passe)** : avec `-gdb`, si une
-session gdb se termine **sans `detach`** (script gdb interrompu par une erreur,
-par ex.), QEMU laisse la VM **en pause** : `info status` → `VM status: paused`.
-Tous les échantillons (écran VGA, RIP) sont alors **figés** et donnent
-l'illusion d'un « gel » — c'est ce qui a produit de fausses mesures les jours
-précédents (dont le « boot » d'une manche). HMP `cont` est ignoré tant que le
-stub gdb n'a pas été libéré. **Toujours terminer le script gdb par `detach`,
-puis vérifier `info status` = `running` avant toute mesure.**
+**Major methodological trap (fixed in the 3rd pass)**: with `-gdb`, if a
+gdb session exits **without `detach`** (gdb script interrupted by an error,
+for instance), QEMU leaves the VM **paused**: `info status` → `VM status: paused`.
+All samples (VGA screen, RIP) are then **frozen** and give the illusion of a
+"hang" — this is what produced false measurements on previous days
+(including one "boot" run). HMP `cont` is ignored while the gdb stub has not
+been released. **Always end the gdb script with `detach`, then check that
+`info status` = `running` before any measurement.**
 
-### Résultat (reproductible)
+### Result (reproducible)
 
-- Overlay **neuf** (`FRESH=1`, fs propre) + noyau fork installé en
-  `/boot/gnumach-1.8-amd64-up.gz` :
-  - `-smp 1` → boot complet, réseau vioif monté, SSH OK ;
-  - `-smp 2` → le boot **se bloque toujours** sur la même ligne console :
+- **Fresh** overlay (`FRESH=1`, clean fs) + fork kernel installed at
+  `/boot/gnumach-1.8-amd64-up.gz`:
+  - `-smp 1` → full boot, vioif network up, SSH OK ;
+  - `-smp 2` → boot **always stalls** on the same console line:
     ```
     ahcisata0 at pci0 dev 31 function 2: vendor 8086 product 2922 (rev. 0x02)
     ahcisata0: 64-bit DMA
     ```
-    (constaté 4 fois, dont > 5 min sans progression ; `cont` + `sendkey` ne
-    débloquent pas). En 3e passe, `-smp 2` sans option gèle **4 manches sur 4**,
-    mais le gel est **intermittent** dès qu'on retire l'AP (voir § 3e passe).
-- Cette sortie vient du **traducteur utilisateur `rumpdisk`**
-  (`/hurd/rumpdisk.static`) : la chaîne `ahcisata` **n'est pas** dans le noyau
-  (`strings gnumach | grep -c ahcisata` = 0) et `rump` n'est pas compilé dans
-  gnumach. C'est le rump kernel embarqué dans `rumpdisk` qui se bloque en
-  pleine attache AHCI, **avant tout montage de fs**.
-- État noyau au blocage (gdb, symboles `/tmp/gnumach-new`) :
-  - **CPU0** : `rip 0xffffffff810168e4` = `hpclock_read_counter+20`
+    (observed 4 times, including > 5 min without progress ; `cont` + `sendkey`
+    do not unblock it). In the 3rd pass, `-smp 2` without options hangs
+    **4 rounds out of 4**, but the hang is **intermittent** once the AP is
+    not started (see § 3rd pass).
+- This output comes from the **user translator `rumpdisk`**
+  (`/hurd/rumpdisk.static`): the `ahcisata` string **is not** in the kernel
+  (`strings gnumach | grep -c ahcisata` = 0) and `rump` is not compiled into
+  gnumach. It is the rump kernel embedded in `rumpdisk` that stalls in the
+  middle of the AHCI attach, **before any fs mount**.
+- Kernel state at the hang (gdb, symbols `/tmp/gnumach-new`):
+  - **CPU0**: `rip 0xffffffff810168e4` = `hpclock_read_counter+20`
     (`i386/i386/apic.c:495`) ; backtrace
     `clock_interrupt (usec=10000) ← kern/mach_clock.c:341 ← interrupt()`
-    (`x86_64/interrupt.S:128`). ⇒ CPU0 ne fait que l'IT horloge 100 Hz.
-  - **CPU1** : `rip 0xffffffff8103403d` = `machine_idle+13`
+    (`x86_64/interrupt.S:128`). ⇒ CPU0 only handles the 100 Hz clock interrupt.
+  - **CPU1**: `rip 0xffffffff8103403d` = `machine_idle+13`
     (`i386/i386at/model_dep.c:257`), `HLT=1`.
-  - `percpu_array[0..1].active_thread->task->name` = `"gnumach"` (tâche oisive)
-    ⇒ **aucune tâche utilisateur n'est runnable** : `rumpdisk` est **bloqué
-    dans le noyau**, il ne fait pas de spin.
-  - Le compteur HPET avance (`xp/2xw 0xfed000f0` change) ⇒ l'horloge **n'est
-    pas** gelée ; ce n'est pas un problème de timer.
-- Interprétation : sous `-smp 2` l'attache AHCI de `rumpdisk` n'aboutit jamais
-  (attente d'un événement qui n'arrive pas : IRQ PCI non délivrée / réveil
-  perdu). Le reste du noyau est sain. C'est bien une **course SMP** : en
-  `-smp 1` le *même* binaire `rumpdisk` passe.
-- Piste côté gnumach : `device/intr.c` — un IRQ utilisateur est **masqué**
-  jusqu'à l'`irq_acknowledge()` de l'utilisateur (`queue_intr()` →
-  `__disable_irq()`), et le nettoyage des ports morts imprime
-  `release a dead delivery port` / `still N unacked irqs` (messages déjà vus
-  lors du gel de bascule réseau). Un IRQ non délivré/acquitté en SMP laisse le
-  pilote bloqué définitivement. **Aucun correctif isolé identifié à ce stade.**
-- Limite : la marche de `default_pset.tasks` via gdb renvoie des entrées
-  invalides, et le boot bloqué avant le shell interdit `ps` ; le PC utilisateur
-  exact de `rumpdisk` n'a donc pas pu être relevé. Le **binaire utilisateur
-  fautif est néanmoins identifié sans ambiguïté** (`rumpdisk`) et le **point de
-  blocage** est l'attache AHCI (`ahcisata`, après « 64-bit DMA »).
+  - `percpu_array[0..1].active_thread->task->name` = `"gnumach"` (idle task)
+    ⇒ **no user task is runnable**: `rumpdisk` is **blocked inside the
+    kernel**, it is not spinning.
+  - The HPET counter advances (`xp/2xw 0xfed000f0` changes) ⇒ the clock is
+    **not** frozen; not a timer problem.
+- Interpretation: under `-smp 2` the `rumpdisk` AHCI attach never completes
+  (waiting for an event that never arrives: undelivered PCI IRQ / lost
+  wakeup). The rest of the kernel is healthy. This is indeed an **SMP race**:
+  at `-smp 1` the *same* `rumpdisk` binary gets through.
+- gnumach-side lead: `device/intr.c` — a user IRQ is **masked** until the
+  user's `irq_acknowledge()` (`queue_intr()` → `__disable_irq()`), and
+  cleanup of dead delivery ports prints
+  `release a dead delivery port` / `still N unacked irqs` (messages already seen
+  during the network-switch freeze). An undelivered/unacknowledged IRQ under SMP
+  leaves the driver blocked forever. **No isolated fix identified at this stage.**
+- Limit: walking `default_pset.tasks` via gdb returns invalid entries, and a
+  boot hung before the shell precludes `ps` ; the exact user PC of `rumpdisk`
+  could therefore not be captured. The **faulty user binary is nonetheless
+  unambiguously identified** (`rumpdisk`) and the **blocking point** is the
+  AHCI attach (`ahcisata`, after "64-bit DMA").
 
-⇒ Chantier **non isolé** (rump/Hurd, pas un simple verrou gnumach) :
-`-smp 2` reste **inutilisable** ; `-smp 1` reste la référence fonctionnelle.
+⇒ Work **not isolated** (rump/Hurd, not a simple gnumach lock):
+`-smp 2` remains **unusable**; `-smp 1` remains the working reference.
 
-> ⚠️ **Mise à jour (2e puis 3e passe, même jour)** : l'interprétation « course
-> SMP dans `device/intr.c` / IRQ utilisateur masqué » ci-dessus est **écartée** :
-> au gel l'IRQ utilisateur (PCI 16/AHCI) n'est **jamais établie** — le blocage
-> est *avant* `pci_intr_establish`. L'interprétation « aucun IRQ matériel
-> n'arrive dès que l'IOAPIC est émulé par KVM » (2e passe) est **également
-> écartée** par la 3e passe : sous `kernel-irqchip=on` l'IOAPIC est correctement
-> programmé et les IRQ matérielles sont bien délivrées pendant le gel. Voir les
-> deux sections suivantes.
+> ⚠️ **Update (2nd then 3rd pass, same day)**: the interpretation "SMP race
+> in `device/intr.c` / masked user IRQ" above is **dropped**: at the hang the
+> user IRQ (PCI 16/AHCI) is **never established** — the stall is *before*
+> `pci_intr_establish`. The interpretation "no hardware IRQ arrives once the
+> IOAPIC is emulated by KVM" (2nd pass) is **also dropped** by the 3rd pass:
+> under `kernel-irqchip=on` the IOAPIC is correctly programmed and hardware
+> IRQs are delivered during the hang. See the two next sections.
 
-## Autopsie du gel `-smp 2` — 2e passe : différentiel IOAPIC **KVM vs QEMU** (17/10/2026)
+## Autopsy of the `-smp 2` hang — 2nd pass: IOAPIC differential **KVM vs QEMU** (17/10/2026)
 
-Méthode nouvelle (aucune écriture dans `hurd-dev.qcow2` ; overlays jetables) :
+New method (no writes into `hurd-dev.qcow2`; disposable overlays):
 
-- **Capture du log de boot complet via la mémoire VGA, VM jamais figée** :
-  HMP `xp/4000cb 0xb8000` lit le buffer texte (`0xb8000` physique, paires
-  octet/attribut → caractères aux offsets pairs, 80 colonnes). L'échantillonneur
-  `vm/vgacap.py` (`SOCK=… OUT=… DUR=…`) n'écrit que les écrans qui changent.
-  C'est la **seule** façon d'obtenir le log noyau + utilisateur en headless :
-  `-serial file:` reste **vide**, tout passe par la VGA.
-- **Lecture de l'IOAPIC via gdb** : possible *uniquement* si l'IOAPIC n'est pas
-  détenu par KVM, c.-à-d. avec `-M q35,kernel-irqchip=split`. On écrit le
-  sélecteur puis on lit la fenêtre à travers le mapping noyau de l'IOAPIC
-  (`apic_data.ioapic_list[0].ioapic` = `0xffffffffca927000`) :
+- **Capture of the full boot log via the VGA memory, VM never frozen**:
+  HMP `xp/4000cb 0xb8000` reads the text buffer (physical `0xb8000`,
+  byte/attribute pairs → characters at even offsets, 80 columns). The sampler
+  `vm/vgacap.py` (`SOCK=… OUT=… DUR=…`) only writes screens that change.
+  This is the **only** way to get the kernel + user log headless:
+  `-serial file:` stays **empty**, everything goes through the VGA.
+- **Reading the IOAPIC via gdb**: possible *only* if the IOAPIC is not held
+  by KVM, i.e. with `-M q35,kernel-irqchip=split`. One writes the selector
+  then reads the window through the kernel mapping of the IOAPIC
+  (`apic_data.ioapic_list[0].ioapic` = `0xffffffffca927000`):
   `set {unsigned int}0xffffffffca927000 = 1` ; `x/1xw 0xffffffffca927010`
-  → `0x00170020` (24 pins, version `0x20`). Avec `kernel-irqchip=on` (défaut),
-  ces accès ne sont **pas** lisibles depuis l'hôte (région possédée par
-  l'irqchip noyau) : d'où l'échec des lectures précédentes.
+  → `0x00170020` (24 pins, version `0x20`). With `kernel-irqchip=on` (default),
+  these accesses are **not** readable from the host (region owned by
+  the kernel irqchip): hence the failure of the previous reads.
 
-### Résultat décisif : le gel suit l'IOAPIC émulé par KVM (mais pas pour la raison supposée — voir 3e passe)
+### Decisive result: the hang follows the KVM-emulated IOAPIC (but not for the assumed reason — see 3rd pass)
 
-| configuration QEMU | noyau | `-smp` | résultat |
+| QEMU configuration | kernel | `-smp` | result |
 |---|---|---|---|
-| `-M q35` (KVM irqchip, défaut) | fork (build SMP, oct. 2026) | 2 | **gel** : écran figé > 206 s sur `ahcisata0: 64-bit DMA` |
-| `-M q35` | fork | 1 | boot complet → `login:` (attache AHCI OK à `1.040 s` de temps rump) |
-| **`-M q35,kernel-irqchip=split`** | **fork** | **2** | **boot complet (~40 s) → `login:`, clavier OK** |
-| `-M q35` (KVM irqchip) | **stock (2026-02-24, `-up`)** | 2 | boot complet, clavier OK |
+| `-M q35` (KVM irqchip, default) | fork (SMP build, Oct. 2026) | 2 | **hang**: screen frozen > 206 s at `ahcisata0: 64-bit DMA` |
+| `-M q35` | fork | 1 | full boot → `login:` (AHCI attach OK at `1.040 s` of rump time) |
+| **`-M q35,kernel-irqchip=split`** | **fork** | **2** | **full boot (~40 s) → `login:`, keyboard OK** |
+| `-M q35` (KVM irqchip) | **stock (2026-02-24, `-up`)** | 2 | full boot, keyboard OK |
 
-- En `-smp 2` (KVM irqchip) le blocage se produit **exactement** entre
-  `ahcisata0: 64-bit DMA` et `ahcisata0: interrupting at …` (message imprimé
-  juste après l'établissement de l'IRQ PCI par `rumpdisk`). En `-smp 1` la
-  suite défile immédiatement : `interrupting at pausebreak`, `atabus0..5`,
-  `wd0 at atabus0 drive 0`, `wd0(ahcisata0:0:0): using PIO mode 4 …`, puis
+- At `-smp 2` (KVM irqchip) the stall happens **exactly** between
+  `ahcisata0: 64-bit DMA` and `ahcisata0: interrupting at …` (message printed
+  just after `rumpdisk` establishes the PCI IRQ). At `-smp 1` the rest scrolls
+  immediately: `interrupting at pausebreak`, `atabus0..5`,
+  `wd0 at atabus0 drive 0`, `wd0(ahcisata0:0:0): using PIO mode 4 …`, then
   login / `sshd`.
-- **Avec l'IOAPIC émulé par QEMU (`kernel-irqchip=split`), le même noyau fork
-  en `-smp 2` démarre normalement et le clavier répond** (chaque `sendkey ret`
-  rend un nouveau prompt `login:`). Le différentiel KVM vs QEMU est donc réel,
-  mais **la cause n'est pas « l'IOAPIC KVM mal programmé »** : la 3e passe (plus
-  bas) montre que sous `kernel-irqchip=on` les entrées redir sont **correctes**
-  et les IRQ matérielles **délivrées** au moment du gel. Le mode `split` change
-  surtout le **timing** (accès IOAPIC sortants au lieu d'écritures directes).
-- Contrôle : le **noyau stock** (2026-02-24, suffixe `-up`) fonctionne avec
-  l'IOAPIC KVM ⇒ l'IOAPIC KVM n'est pas intrinsèquement cassé ; la régression
-  est bien côté **noyau du fork**.
-- Le noyau fork est un **build SMP** (`NCPUS=2`) alors que le stock est `-up`.
-  En `-smp 1` (1 seul vCPU) le fork **ne gèle jamais** (vérifié : clavier OK,
-  `info irq` IRQ1 10→12). En `-smp 2` il gèle **4 fois sur 4** ; en `-smp 2`
-  **+ `maxcpus=1`** (AP jamais démarré) il boote **5 fois sur 6** ⇒ c'est le
-  **démarrage effectif de l'AP** qui est le déclencheur principal (3e passe).
+- **With the IOAPIC emulated by QEMU (`kernel-irqchip=split`), the same fork
+  kernel at `-smp 2` boots normally and the keyboard responds** (each
+  `sendkey ret` yields a new `login:` prompt). The KVM vs QEMU differential is
+  therefore real, but **the cause is not "the KVM IOAPIC misprogrammed"**: the
+  3rd pass (below) shows that under `kernel-irqchip=on` the redir entries are
+  **correct** and hardware IRQs are **delivered** at the time of the hang. The
+  `split` mode mainly changes **timing** (outgoing IOAPIC accesses instead of
+  direct writes).
+- Control: the **stock kernel** (2026-02-24, `-up` suffix) works with the
+  KVM IOAPIC ⇒ the KVM IOAPIC is not intrinsically broken; the regression is
+  indeed on the **fork kernel** side.
+- The fork kernel is an **SMP build** (`NCPUS=2`) whereas the stock one is
+  `-up`. At `-smp 1` (1 vCPU) the fork **never hangs** (verified: keyboard OK,
+  `info irq` IRQ1 10→12). At `-smp 2` it hangs **4 times out of 4**; at `-smp 2`
+  **+ `maxcpus=1`** (AP never started) it boots **5 times out of 6** ⇒ the
+  **effective AP startup** is the main trigger (3rd pass).
 
-### 3e passe : `info pic`/`info irq` sous KVM, rôle de l'AP, intermittence (17/10/2026)
+### 3rd pass: `info pic`/`info irq` under KVM, role of the AP, intermittence (17/10/2026)
 
-⚠️ **Correction de la 2e passe** : l'affirmation « aucun IRQ matériel n'arrive
-dès que l'IOAPIC est émulé par KVM » est **fausse**. Sous `kernel-irqchip=on`
-l'IOAPIC appartient bien à KVM, mais HMP `info pic` en expose l'état exact, et
-cet état est **correct** ; les IRQ matérielles **sont délivrées** pendant le gel
-(mesures gdb de la 2e passe : `hardclock` ≈ 1854 en ~18 s à 100 Hz,
-`ioapic_irq_eoi(pin==0)` = 1854, `kdintr` = 10). Le noyau vit ; c'est
-l'**utilisateur** (`rumpdisk`, chaîne ACPI `_CRS` → `pci_intr_establish`) qui ne
-progresse plus.
+⚠️ **Correction of the 2nd pass**: the claim "no hardware IRQ arrives once
+the IOAPIC is emulated by KVM" is **false**. Under `kernel-irqchip=on`
+the IOAPIC belongs to KVM, but HMP `info pic` exposes its exact state, and
+that state is **correct**; hardware IRQs **are delivered** during the hang
+(gdb measurements of the 2nd pass: `hardclock` ≈ 1854 in ~18 s at 100 Hz,
+`ioapic_irq_eoi(pin==0)` = 1854, `kdintr` = 10). The kernel is alive; it is
+the **user side** (`rumpdisk`, ACPI `_CRS` chain → `pci_intr_establish`) that no
+longer progresses.
 
-**Tables de routage comparées** (HMP `info pic` ; IOAPIC KVM `ver=0x11 id=0x00`,
-`sel` = dernière GSI sélectionnée) :
+**Compared routing tables** (HMP `info pic` ; KVM IOAPIC `ver=0x11 id=0x00`,
+`sel` = last selected GSI):
 
-| cas | `sel` | pin 1 (kbd) | pin 2 (PIT) | pin 4 | pin 9 | pin 12 | pin 16 (AHCI) | pin 23 |
+| case | `sel` | pin 1 (kbd) | pin 2 (PIT) | pin 4 | pin 9 | pin 12 | pin 16 (AHCI) | pin 23 |
 |---|---|---|---|---|---|---|---|---|
-| stock `-up`, `-smp 2` (OK) | `0x30` | `0x0031` v49 | `0x0030` v48 | `0x0034` v52 | `0x8039` | `0x003c` v60 | **`0xa040` non masqué** | **`0xa047` non masqué** |
-| fork `-smp 1` (OK) | `0x30` | idem | idem | idem | idem | idem | **non masqué** | **non masqué** |
-| fork `-smp 2` (**gel**) | `0x22` | idem | idem | idem | idem | `0x1003c` masqué | `0x1a040` **masqué** | `0x1a047` **masqué** |
+| stock `-up`, `-smp 2` (OK) | `0x30` | `0x0031` v49 | `0x0030` v48 | `0x0034` v52 | `0x8039` | `0x003c` v60 | **`0xa040` unmasked** | **`0xa047` unmasked** |
+| fork `-smp 1` (OK) | `0x30` | same | same | same | same | same | **unmasked** | **unmasked** |
+| fork `-smp 2` (**hang**) | `0x22` | same | same | same | same | `0x1003c` masked | `0x1a040` **masked** | `0x1a047` **masked** |
 
-⇒ au gel, les pins 1/2/4/9 sont **identiques** aux cas qui fonctionnent
-(`info irq` : `1:3`, `4:1`) : l'IOAPIC n'est **pas** mal programmé par KVM. La
-seule différence est l'**établissement de l'IRQ 16 (AHCI)** : au gel, pin 16 est
-**encore masqué** ⇒ le blocage survient **avant** `pci_intr_establish`, soit
-exactement entre `ahcisata0: 64-bit DMA` et `ahcisata0: interrupting at …`.
-Dans les cas qui marchent, pin 16 est démasqué et `info irq` affiche `10:` et
-`16:` à ~13 000–33 000 (activité AHCI ; la même ligne comptée via PIC **et**
+⇒ at the hang, pins 1/2/4/9 are **identical** to the working cases
+(`info irq`: `1:3`, `4:1`): the IOAPIC is **not** misprogrammed by KVM. The
+only difference is the **establishment of IRQ 16 (AHCI)**: at the hang, pin 16
+is **still masked** ⇒ the stall occurs **before** `pci_intr_establish`, i.e.
+exactly between `ahcisata0: 64-bit DMA` and `ahcisata0: interrupting at …`.
+In the working cases, pin 16 is unmasked and `info irq` shows `10:` and
+`16:` at ~13,000–33,000 (AHCI activity; the same line counted via PIC **and**
 IOAPIC).
 
-**Le démarrage de l'AP est le déclencheur principal.** Manches automatisées
-(`/tmp/gm/trials.sh` : overlay copié à l'identique avant chaque manche, aucune
-intervention gdb sauf l'injection `maxcpus=1`, lecture d'écran par
-`xp/16384cb 0xb8000`) :
+**The AP startup is the main trigger.** Automated rounds
+(`/tmp/gm/trials.sh`: overlay copied identically before each round, no
+gdb intervention except the `maxcpus=1` injection, screen read via
+`xp/16384cb 0xb8000`):
 
-| recette (`-smp 2`, IOAPIC KVM, noyau fork) | résultat |
+| recipe (`-smp 2`, KVM IOAPIC, fork kernel) | result |
 |---|---|
-| AP démarré (aucune option) | **gel 4/4** (+ `F2`, même point) |
-| `maxcpus=1` — AP **non** démarré (gdb : `smp_info.num_cpus = 1`) | **boot 5/6** (gel 1/6) |
+| AP started (no option) | **hang 4/4** (+ `F2`, same point) |
+| `maxcpus=1` — AP **not** started (gdb: `smp_info.num_cpus = 1`) | **boot 5/6** (hang 1/6) |
 | `kernel-irqchip=split` | **boot** |
-| `-smp 1` (1 vCPU, mais *build* SMP) | **boot**, clavier OK (`info irq` IRQ1 10→12) |
-| stock `-up`, `-smp 2` | **boot**, clavier OK (IRQ1 → 237) |
+| `-smp 1` (1 vCPU, but SMP *build*) | **boot**, keyboard OK (`info irq` IRQ1 10→12) |
+| stock `-up`, `-smp 2` | **boot**, keyboard OK (IRQ1 → 237) |
 
-⇒ `-smp 1` (build SMP, 1 vCPU) **ne gèle jamais** : le build SMP seul est
-innocent. Avec un 2ᵉ vCPU **et** l'AP démarré, le gel est quasi systématique
-(4/4) ; avec un 2ᵉ vCPU mais AP **non** démarré, il devient rare (1/6). Le code
-fork-only de la mise en route de l'AP (`mp_desc.c` : `lapic_disable()` puis
-attente `pit_udelay(1000)` avec IT coupées, puis `lapic_enable()`) est donc le
-**suspect principal** — mais il n'est **pas** la cause unique (le 1/6 avec
-`maxcpus=1`, où ce code n'est pas exécuté, montre une **composante de course**).
+⇒ `-smp 1` (SMP build, 1 vCPU) **never hangs**: the SMP build alone is
+innocent. With a 2nd vCPU **and** the AP started, the hang is nearly
+systematic (4/4); with a 2nd vCPU but the AP **not** started, it becomes rare
+(1/6). The fork-only AP bring-up code (`mp_desc.c`: `lapic_disable()` then
+wait `pit_udelay(1000)` with interrupts off, then `lapic_enable()`) is therefore the
+**prime suspect** — but it is **not** the sole cause (the 1/6 with
+`maxcpus=1`, where this code is not executed, shows a **race component**).
 
-**Intermittence / course** : le même `maxcpus=1` qui boote 5 fois sur 6 a gelé
-une fois (`MX`) ; à l'inverse, les « boots » obtenus après une série de pauses
-gdb s'expliquent par le **timing** déplacé. Le mode `kernel-irqchip=split`
-(différentiel réel, reproductible) change surtout le timing des accès IOAPIC.
+**Intermittence / race**: the same `maxcpus=1` that boots 5 times out of 6
+hung once (`MX`); conversely, the "boots" obtained after a series of gdb
+pauses are explained by the shifted **timing**. The `kernel-irqchip=split`
+mode (real, reproducible differential) mainly changes the timing of IOAPIC
+accesses.
 
-**Audit fenêtre 2026-02-24 → HEAD** (`git diff v1.8+git20260224..HEAD`) :
+**Audit window 2026-02-24 → HEAD** (`git diff v1.8+git20260224..HEAD`):
 
-| fichier | Δ | contenu |
+| file | Δ | content |
 |---|---|---|
-| `i386/i386/mp_desc.c` | +34 | **fork-only** : attente AP bornée (5 s) avec `pit_udelay(1000)`, dégradation BSP (`smp_set_numcpus(1)`) — exécuté **seulement si `ncpus > 1`** |
-| `i386/i386/smp.c` | +96 | **fork-only** : option `maxcpus=N`/`nosmp` ; `smp_send_ipi`/`wait_for_ipi` bornés (dégradation au lieu du blocage) |
-| `i386/i386/pit.c` | +16 | **upstream fenêtre** `38e82f35` : `pit_udelay` corrigé (> `MAX_PIT_USEC`, sémantique `usec`, `val` 64 bits) — c'est aussi lui qui remplace `hpet_udelay` par `pit_udelay` dans `smp.c` |
-| `i386/i386/apic.c` | +12 | upstream fenêtre `40166870` : HPET optionnel (`hpet_init` retourne si absent, `hpclock_read_counter` garde `hpet_addr`) |
-| `kern/processor.c` | +7 | upstream fenêtre `a30402ef` : `pset->max_priority` `BASEPRI_USER` → `BASEPRI_SYSTEM` (+ `processor_name_self`) |
-| `kern/sched_prim.c` | +6 | upstream fenêtre `d30629e6` : gardes `processor != PROCESSOR_NULL` avant `processor->state == PROCESSOR_IDLE` |
-| `kern/ast.c`, `kern/machine.c` | ±2 | fenêtre : gardes `#ifndef MIGRATING_THREADS` retirées |
-| `kern/debug.c` | +6 | fenêtre : `panic_init` initialise `Assert_print_lock` + `panic_lock` |
-| `x86_64/locore.S` | −88 | retrait MACH_TTD, `cpuid`/`ebx`, chemins boot |
-| `i386/spl.S`, `x86_64/spl.S` | ±8 | cosmétique |
-| `ioapic.c`, `i386at/interrupt.S`, `int_init.c`, `idt.c`, `irq.c` | 0 | **inchangés** |
-| `i386/i386at/model_dep.c` | +439 | multiboot2/UEFI, réordonnancement `machine_init` |
+| `i386/i386/mp_desc.c` | +34 | **fork-only**: bounded AP wait (5 s) with `pit_udelay(1000)`, BSP degradation (`smp_set_numcpus(1)`) — executed **only if `ncpus > 1`** |
+| `i386/i386/smp.c` | +96 | **fork-only**: `maxcpus=N`/`nosmp` option ; bounded `smp_send_ipi`/`wait_for_ipi` (degradation instead of deadlock) |
+| `i386/i386/pit.c` | +16 | upstream window `38e82f35`: `pit_udelay` fixed (> `MAX_PIT_USEC`, `usec` semantics, 64-bit `val`) — it is also what replaces `hpet_udelay` with `pit_udelay` in `smp.c` |
+| `i386/i386/apic.c` | +12 | upstream window `40166870`: optional HPET (`hpet_init` returns if absent, `hpclock_read_counter` keeps `hpet_addr`) |
+| `kern/processor.c` | +7 | upstream window `a30402ef`: `pset->max_priority` `BASEPRI_USER` → `BASEPRI_SYSTEM` (+ `processor_name_self`) |
+| `kern/sched_prim.c` | +6 | upstream window `d30629e6`: guards `processor != PROCESSOR_NULL` before `processor->state == PROCESSOR_IDLE` |
+| `kern/ast.c`, `kern/machine.c` | ±2 | window: `#ifndef MIGRATING_THREADS` guards removed |
+| `kern/debug.c` | +6 | window: `panic_init` initializes `Assert_print_lock` + `panic_lock` |
+| `x86_64/locore.S` | −88 | MACH_TTD removal, `cpuid`/`ebx`, boot paths |
+| `i386/spl.S`, `x86_64/spl.S` | ±8 | cosmetic |
+| `ioapic.c`, `i386at/interrupt.S`, `int_init.c`, `idt.c`, `irq.c` | 0 | **unchanged** |
+| `i386/i386at/model_dep.c` | +439 | multiboot2/UEFI, `machine_init` reordering |
 
-Aucun de ces deltas ne démontre un défaut isolé ; le seul code **fork-only
-exécuté uniquement quand l'AP démarre** est la boucle `mp_desc.c`
-(`pit_udelay(1000)` / canal 2 PIT / port `0x61`, IT coupées par `splhigh()`),
-avec le `lapic_disable()`/`lapic_enable()` qui l'encadre (ceux-ci sont upstream).
-C'est la piste à instruire en priorité (cf. « Prochaines expériences »).
+None of these deltas demonstrates an isolated defect; the only **fork-only
+code executed only when the AP starts** is the `mp_desc.c` loop
+(`pit_udelay(1000)` / PIT channel 2 / port `0x61`, interrupts off via `splhigh()`),
+with the `lapic_disable()`/`lapic_enable()` pair surrounding it (these are
+upstream). That is the lead to investigate first (cf. "Next experiments").
 
-À noter aussi dans la fenêtre : la paire `f41f8801` « periodic intrs: Change the
-clock source to be lapic timer on all cpus » + son `ddb0766a` **Revert** (effet
-net nul), et les deux commits fork `99a21a39`/`c11e6cea` (dégradation AP).
+Also noteworthy in the window: the pair `f41f8801` "periodic intrs: Change the
+clock source to be lapic timer on all cpus" + its `ddb0766a` **Revert** (net
+effect nil), and the two fork commits `99a21a39`/`c11e6cea` (AP degradation).
 
-### Entrées IOAPIC observées (dans le cas qui marche, `kernel-irqchip=split`)
+### Observed IOAPIC entries (in the working case, `kernel-irqchip=split`)
 
 ```
 VER = 0x00170020                    (24 pins, version 0x20)
-pin  1 (clavier) low = 0x00000031 → vecteur 49, non masqué, edge, actif haut ✔
-pin  2 (timer)   low = 0x00000030 → vecteur 48, non masqué ✔   (remap timer)
-pin  3           low = 0x00010033 → masqué
-pin  9 (ACPI)    low = 0x00008039 → masqué, niveau, actif bas
-pin 10 (SATA)    low = 0x0001803a → masqué
-pin 16           low = 0x0000a040 → masqué, niveau
-has_irq_specific_eoi = 1 (version 0x20 ⇒ EOI dirigée)
+pin  1 (keyboard) low = 0x00000031 → vector 49, unmasked, edge, active high ✔
+pin  2 (timer)   low = 0x00000030 → vector 48, unmasked ✔   (remapped timer)
+pin  3           low = 0x00010033 → masked
+pin  9 (ACPI)    low = 0x00008039 → masked, level, active low
+pin 10 (SATA)    low = 0x0001803a → masked
+pin 16           low = 0x0000a040 → masked, level
+has_irq_specific_eoi = 1 (version 0x20 ⇒ directed EOI)
 ```
 
-Le noyau programme donc correctement pin1/pin2 ; les pins PCI restent
-**masqués** même après installation des handlers utilisateur
+The kernel therefore programs pin1/pin2 correctly; the PCI pins stay
+**masked** even after user handlers are installed
 (`user_intr_handlers[9/16/23] ≠ NULL`).
 
-### Hypothèses écartées par la mesure
+### Hypotheses ruled out by measurement
 
-- **`has_irq_specific_eoi` / « workaround » EOI** : avec l'IOAPIC KVM la version
-  lue est `0x11` (KVM n'annonce pas `0x20`) ⇒ `has_irq_specific_eoi = 0` ⇒
-  chemin *mask/edge/restore* à **chaque** EOI. Mais (a) le noyau **stock** lit
-  aussi `0x11` et **fonctionne** ; (b) forcer la valeur à 0 à chaud dans le cas
-  qui marche **ne casse rien**. ⇒ ce drapeau n'est pas le déclencheur.
-- **`ioapic.c` est identique** entre le noyau stock (2026-02-24) et le HEAD du
-  fork : `ioapic.c`, `int_init.c`, `idt.c`, `irq.c`, `apic.h`, `device/intr.c`,
-  `kd.c`, `spl.c` → **aucune modification** (`git diff v1.8+git20260224..HEAD`,
-  voir la table d'audit de la 3e passe).
+- **`has_irq_specific_eoi` / EOI "workaround"**: with the KVM IOAPIC the
+  version read is `0x11` (KVM does not advertise `0x20`) ⇒
+  `has_irq_specific_eoi = 0` ⇒ *mask/edge/restore* path at **every** EOI.
+  But (a) the **stock** kernel also reads `0x11` and **works**; (b) forcing
+  the value to 0 hot in the working case **breaks nothing**. ⇒ this flag is
+  not the trigger.
+- **`ioapic.c` is identical** between the stock kernel (2026-02-24) and the
+  fork HEAD: `ioapic.c`, `int_init.c`, `idt.c`, `irq.c`, `apic.h`,
+  `device/intr.c`, `kd.c`, `spl.c` → **no modification**
+  (`git diff v1.8+git20260224..HEAD`, see the 3rd-pass audit table).
 - **`device/intr.c`** (`assert_wait`/`queue_intr`/`irq_acknowledge`/
-  `intr_thread`) : **jamais atteinte** — `irqtab.tot_num_intr = 0`, files
-  `main_intr_queue` (id 9/16/23) à `interrupts = n_unacked = 0`,
-  `nested_irqs[].ndisabled = 0`, handlers `user_intr_handlers` bien installés.
-  Le point de blocage est **avant** cette mécanique : au gel, l'IRQ PCI 16
-  (AHCI) n'est **pas encore établie** par `rumpdisk` (`irqtab.tot_num_intr = 0`,
-  pin 16 encore masqué — 3e passe). Les IRQ matérielles déjà établies
-  (clavier IRQ1, PIT remappé) **sont** bien délivrées et acquittées ; `kdintr`
-  est en place (`ivect[1]`) et `unexpected ACK from keyboard` prouve que
-  `kdinit` (donc `unmask_irq(KBD_IRQ)`) s'exécute aussi dans le noyau fork.
-- **Fenêtre de régression** (2026-02-24 → HEAD, `git diff
-  v1.8+git20260224..HEAD`) : détail fichier par fichier dans la table de la 3e
-  passe. En résumé : `ioapic.c`/`interrupt.S`/`int_init.c`/`idt.c`/`irq.c`
-  **inchangés** ; côté fork, `mp_desc.c` (+34 : attente AP bornée +
-  `pit_udelay(1000)` + dégradation BSP, seulement si `ncpus > 1`) et `smp.c`
-  (+96 : `maxcpus`/`nosmp`, IPI bornées) ; dans la fenêtre upstream,
-  `pset->max_priority` (`BASEPRI_USER`→`BASEPRI_SYSTEM`), gardes
-  `processor != PROCESSOR_NULL` de `sched_prim.c`, correction de `pit_udelay`
-  (`pit.c`), HPET optionnel (`apic.c`), `model_dep.c` (multiboot2/UEFI),
-  `locore.S` (retrait MACH_TTD), `spl.S` (cosmétique).
+  `intr_thread`): **never reached** — `irqtab.tot_num_intr = 0`, queues
+  `main_intr_queue` (ids 9/16/23) at `interrupts = n_unacked = 0`,
+  `nested_irqs[].ndisabled = 0`, handlers `user_intr_handlers` installed.
+  The blocking point is **before** this machinery: at the hang, PCI IRQ 16
+  (AHCI) is **not yet established** by `rumpdisk` (`irqtab.tot_num_intr = 0`,
+  pin 16 still masked — 3rd pass). The hardware IRQs already established
+  (keyboard IRQ1, remapped PIT) **are** delivered and acknowledged; `kdintr`
+  is in place (`ivect[1]`) and `unexpected ACK from keyboard` proves
+  `kdinit` (hence `unmask_irq(KBD_IRQ)`) runs in the fork kernel too.
+- **Regression window** (2026-02-24 → HEAD, `git diff
+  v1.8+git20260224..HEAD`): file-by-file detail in the 3rd-pass table.
+  In short: `ioapic.c`/`interrupt.S`/`int_init.c`/`idt.c`/`irq.c`
+  **unchanged**; fork side, `mp_desc.c` (+34: bounded AP wait +
+  `pit_udelay(1000)` + BSP degradation, only if `ncpus > 1`) and `smp.c`
+  (+96: `maxcpus`/`nosmp`, bounded IPIs); upstream window,
+  `pset->max_priority` (`BASEPRI_USER`→`BASEPRI_SYSTEM`),
+  `processor != PROCESSOR_NULL` guards from `sched_prim.c`, `pit_udelay`
+  fix (`pit.c`), optional HPET (`apic.c`), `model_dep.c` (multiboot2/UEFI),
+  `locore.S` (MACH_TTD removal), `spl.S` (cosmetic).
 
-### Conclusion d'audit — pas de correctif à l'aveugle
+### Audit conclusion — no blind fix
 
-- L'hypothèse de départ (verrouillage `assert_wait` + `queue_intr` +
-  `device_intr_ack` + `ioapic_toggle` dans `device/intr.c`) est **écartée** :
-  la mécanique est cohérente et **jamais sollicitée** au gel (rien d'enfilé,
-  rien de masqué, aucun verrou tenu) — parce que l'IRQ PCI 16 n'est pas encore
-  établie. L'hypothèse « l'IOAPIC KVM ne délivre pas les IRQ » est **écartée**
-  aussi (3e passe : tables correctes, IRQ délivrées).
-- Élément **positif** : le **démarrage de l'AP** fait passer le gel de
-  « rare » (1/6 avec `maxcpus=1`) à « quasi systématique » (4/4). Le code
-  fork-only exécuté à ce moment (`mp_desc.c` : `lapic_disable()`, attente
-  `pit_udelay(1000)` IT coupées, `lapic_enable()`) est le **suspect n°1**.
-- **Aucun défaut isolé et démontrable** n'a été identifié ⇒ **pas de patch
-  noyau** (un correctif non prouvé casserait la référence `-smp 1`
-  fonctionnelle).
-- **Contournements validés** (overlay jetable uniquement), par ordre de
-  fiabilité :
-  1. `-smp 1` (référence fonctionnelle, clavier OK) ;
-  2. `-smp 2` avec un IOAPIC émulé par QEMU — boot complet + clavier :
+- The initial hypothesis (`assert_wait` + `queue_intr` +
+  `device_intr_ack` + `ioapic_toggle` locking in `device/intr.c`) is
+  **dropped**: the machinery is coherent and **never solicited** at the hang
+  (nothing queued, nothing masked, no lock held) — because PCI IRQ 16 is not
+  established yet. The hypothesis "the KVM IOAPIC does not deliver IRQs" is
+  **dropped** too (3rd pass: correct tables, IRQs delivered).
+- **Positive** element: **the AP startup** moves the hang from "rare"
+  (1/6 with `maxcpus=1`) to "nearly systematic" (4/4). The fork-only code
+  executed at that moment (`mp_desc.c`: `lapic_disable()`, wait
+  `pit_udelay(1000)` with interrupts off, `lapic_enable()`) is the
+  **suspect #1**.
+- **No isolated and demonstrable defect** was identified ⇒ **no kernel
+  patch** (an unproven fix would break the working `-smp 1` reference).
+- **Validated workarounds** (disposable overlay only), in order of
+  reliability:
+  1. `-smp 1` (working reference, keyboard OK) ;
+  2. `-smp 2` with a QEMU-emulated IOAPIC — full boot + keyboard:
      ```sh
      MACHINE=q35,kernel-irqchip=split SMP=2 OVL=… MON=… SSH_PORT=2322 \
        ./run-hurd64-smp.sh /home/ben/hurd-fork/vm/hurd-dev.qcow2
      ```
-  3. `-smp 2` **+ `maxcpus=1`** (option fork) : boot 5/6 — utile mais **non
-     garanti** (le 2ᵉ vCPU reste visible du noyau).
-  (ne jamais modifier `hurd-dev.qcow2` ; le défaut `MACHINE=q35` reste
-  inchangé.)
+  3. `-smp 2` **+ `maxcpus=1`** (fork option): boot 5/6 — useful but **not
+     guaranteed** (the 2nd vCPU still visible to the kernel).
+  (never modify `hurd-dev.qcow2` ; the `MACHINE=q35` default stays unchanged.)
 
-### Reproduire
+### Reproduce
 
 ```sh
 cd /home/ben/hurd-fork/project/vm
-# overlay jetable avec le noyau fork en /boot/gnumach-1.8-amd64-up.gz
+# disposable overlay with the fork kernel at /boot/gnumach-1.8-amd64-up.gz
 OVL=/home/ben/hurd-fork/vm/ovl-stock-smp2.qcow2 FRESH=0 MON=/tmp/hurd-smp2-mon \
   SMP=2 SSH_PORT=2322 VIOIF_PORT=2323 ./run-hurd64-smp.sh \
   /home/ben/hurd-fork/vm/hurd-dev.qcow2
-# lire l'écran sans figer la VM :
+# read the screen without freezing the VM:
 printf 'xp/4000cb 0xb8000\n' | socat - UNIX-CONNECT:/tmp/hurd-smp2-mon
-# log continu :
+# continuous log:
 SOCK=/tmp/hurd-smp2-mon OUT=/tmp/bootlog-smp2.txt DUR=300 python3 vm/vgacap.py
-# variante qui démarre (IOAPIC userspace) :
+# variant that boots (IOAPIC userspace):
 MACHINE=q35,kernel-irqchip=split SMP=2 OVL=… MON=/tmp/hurd-split-mon \
   ./run-hurd64-smp.sh /home/ben/hurd-fork/vm/hurd-dev.qcow2
-# IOAPIC via gdb (stub : printf 'gdbserver tcp::1234\n' | socat - UNIX-CONNECT:$MON) :
+# IOAPIC via gdb (stub: printf 'gdbserver tcp::1234\n' | socat - UNIX-CONNECT:$MON) :
 #   set {unsigned int}0xffffffffca927000 = 1 ; x/1xw 0xffffffffca927010
 ```
 
-Manches répétées (3e passe) : copier l'overlay **avant chaque manche**
-(`cp ovl-stock-smp2.qcow2 ovl-trial-N.qcow2`), lancer la VM, attendre ~85 s,
-puis classer d'après l'écran lu par `xp/16384cb 0xb8000` :
-**WEDGE** si la dernière ligne est `ahcisata0: 64-bit DMA`, **BOOT** si
-`login:` apparaît. Injecter `maxcpus=1` **sans toucher à GRUB** : lancer avec
-`GDB=1 STOP=1`, `hbreak smp_init`, puis écrire dans `kernel_cmdline`
-(`0xffffffffc17ff000`, page fraîche de `init_alloc_aligned`) la chaîne
-`root=part:2:device:wd0 maxcpus=1\0`, `delete` le point d'arrêt et `detach` —
-**toujours vérifier `info status` = `running`** ensuite (voir piège
-méthodologique ci-dessus). Confirmation : `smp_info = {num_cpus = 1}`,
-`machine_slot[1].is_cpu = 0`, sachant que `start_other_cpus()` sort
-immédiatement (`mp_desc.c:284`, `if (ncpus == 1) return;`).
+Repeated rounds (3rd pass): copy the overlay **before each round**
+(`cp ovl-stock-smp2.qcow2 ovl-trial-N.qcow2`), start the VM, wait ~85 s,
+then classify according to the screen read via `xp/16384cb 0xb8000`:
+**WEDGE** if the last line is `ahcisata0: 64-bit DMA`, **BOOT** if
+`login:` appears. Inject `maxcpus=1` **without touching GRUB**: start with
+`GDB=1 STOP=1`, `hbreak smp_init`, then write into `kernel_cmdline`
+(`0xffffffffc17ff000`, fresh page from `init_alloc_aligned`) the string
+`root=part:2:device:wd0 maxcpus=1\0`, `delete` the breakpoint and `detach` —
+**always check `info status` = `running`** afterwards (see methodological
+trap above). Confirmation: `smp_info = {num_cpus = 1}`,
+`machine_slot[1].is_cpu = 0`, knowing that `start_other_cpus()` returns
+immediately (`mp_desc.c:284`, `if (ncpus == 1) return;`).
 
-**Identité des noyaux** (vérifiée dans le guest, `uname` + `md5sum`) :
+**Kernel identities** (verified in the guest, `uname` + `md5sum`):
 
-- **stock** : `/boot/gnumach-1.8-amd64-up.gz` de l'image de base
-  (`hurd-dev.qcow2`), **236 555 octets**, md5
-  `58334befca2eaa36dc7358cc996ecffe` — c'est aussi `/boot/gnumach-stock.gz`
-  dans l'overlay fork. `uname` = `GNU-Mach 1.8+git20260224-up-amd64`,
+- **stock**: `/boot/gnumach-1.8-amd64-up.gz` from the base image
+  (`hurd-dev.qcow2`), **236,555 bytes**, md5
+  `58334befca2eaa36dc7358cc996ecffe` — same as `/boot/gnumach-stock.gz`
+  in the fork overlay. `uname` = `GNU-Mach 1.8+git20260224-up-amd64`,
   `nproc` = **1**.
-- **fork** : `/boot/gnumach-1.8-amd64-up.gz` de `ovl-stock-smp2.qcow2`,
-  **1 611 776 octets**, md5 `c81dfe4716a9216d6bf0c2047998cdf7` (coquille de
-  recopie corrigée en 4e passe : le md5 précédent était tronqué à 30 hex).
-  Variantes de travail (4e passe, `/tmp/gnumach-smp2.gz` = ref fork) :
-  `kA` = HEAD + marqueur `k4-A`, md5 `de1518e0517d160dcda0858e6a4057f7` ;
-  `kB` = attente AP en `cpu_pause()`, md5 `51241aed847422c7a51486d43518c52f`.
+- **fork**: `/boot/gnumach-1.8-amd64-up.gz` from `ovl-stock-smp2.qcow2`,
+  **1,611,776 bytes**, md5 `c81dfe4716a9216d6bf0c2047998cdf7` (copy typo fixed
+  in the 4th pass: the previous md5 was truncated to 30 hex chars).
+  Working variants (4th pass, `/tmp/gnumach-smp2.gz` = fork reference):
+  `kA` = HEAD + `k4-A` marker, md5 `de1518e0517d160dcda0858e6a4057f7` ;
+  `kB` = AP wait in `cpu_pause()`, md5 `51241aed847422c7a51486d43518c52f`.
 
-⇒ un overlay **`FRESH=1`** (simple copie de la base) démarre le **stock**, pas
-le fork : la recette fork **exige** `OVL=ovl-stock-smp2.qcow2 FRESH=0` (ou une
-copie de cet overlay, cf. manches ci-dessus).
+⇒ a **`FRESH=1`** overlay (plain copy of the base) boots the **stock**
+kernel, not the fork: the fork recipe **requires**
+`OVL=ovl-stock-smp2.qcow2 FRESH=0` (or a copy of that overlay, cf. rounds
+above).
 
-### Prochaines expériences (précises)
+### Next experiments (precise)
 
-1. ~~Trancher « build SMP » vs « AP démarré »~~ **FAIT (3e passe)** : `-smp 1`
-   ne gèle jamais ; `-smp 2` gèle 4/4 ; `-smp 2` + `maxcpus=1` (AP non démarré,
-   `smp_info.num_cpus = 1` vérifié par gdb) boote 5/6. ⇒ **déclencheur =
-   démarrage de l'AP**, avec une **composante de course** résiduelle (1/6).
-2. ~~Comparer les tables PIC/IOAPIC dans les 3 cas~~ **FAIT (3e passe)** :
-   pins actifs identiques ; seule différence = **pin 16 (AHCI) encore masqué
-   au gel** ⇒ blocage **avant** `pci_intr_establish`.
-3. **Priorité** — piste `pit_udelay(1000)` de `mp_desc.c` : le seul code
-   fork-only exécuté uniquement quand l'AP démarre (canal 2 PIT / port `0x61`,
-   IT coupées par `splhigh()`). Expérience : patcher à chaud via gdb le `call
-   pit_udelay` de la boucle (NOP) et voir si `-smp 2` boote ; sinon, remplacer
-   `pit_udelay(1000)` par un `cpu_pause()` borné (spin sans toucher au PIT,
-   comme l'upstream) et comparer le taux de gel (4/4 attendu → ?).
-4. Instrumenter `ioapic_toggle_entry` / `unmask_irq` / `ioapic_irq_eoi`
-   (ring buffer `pin`/`mask`/`entry.lo`/`cpu`) et lire au blocage via gdb →
-   détecter un read-modify-write corrompu.
-5. Comparer le routage PIC→GSI `KVM_SET_GSI_ROUTING` côté hôte entre noyau
-   stock (OK) et fork (KO) — nécessite les symboles du noyau stock.
-6. Côté utilisateur : instrumenter la chaîne ACPI `_SB.GSIA._CRS` →
-   `pci_intr_establish` de `rumpdisk`/`pci-arbiter` (IPC `device_intr`/`memory
-   object`) pour voir *où* le fil bloque au gel (voir **4e passe** : le point
-   « le noyau, lui, vit » est **faux** — c'est précisément l'inverse, l'horloge
-   du noyau est morte, donc plus aucun timeout n'expire ; le fil qui « bloque »
-   ne fait qu'attendre un délai qui n'arrive jamais).
+1. ~~Settle "SMP build" vs "AP started"~~ **DONE (3rd pass)**: `-smp 1`
+   never hangs; `-smp 2` hangs 4/4; `-smp 2` + `maxcpus=1` (AP not started,
+   `smp_info.num_cpus = 1` verified by gdb) boots 5/6. ⇒ **trigger = AP
+   startup**, with a residual **race component** (1/6).
+2. ~~Compare the PIC/IOAPIC tables in the 3 cases~~ **DONE (3rd pass)**:
+   active pins identical; only difference = **pin 16 (AHCI) still masked
+   at the hang** ⇒ stall **before** `pci_intr_establish`.
+3. **Priority** — `pit_udelay(1000)` lead from `mp_desc.c`: the only fork-only
+   code executed only when the AP starts (PIT channel 2 / port `0x61`,
+   interrupts off via `splhigh()`). Experiment: hot-patch via gdb the loop's
+   `call pit_udelay` (NOP) and see whether `-smp 2` boots; if not, replace
+   `pit_udelay(1000)` with a bounded `cpu_pause()` (spin without touching the
+   PIT, like upstream) and compare the hang rate (4/4 expected → ?).
+4. Instrument `ioapic_toggle_entry` / `unmask_irq` / `ioapic_irq_eoi`
+   (ring buffer `pin`/`mask`/`entry.lo`/`cpu`) and read at the hang via gdb →
+   detect a corrupted read-modify-write.
+5. Compare the `KVM_SET_GSI_ROUTING` PIC→GSI routing host-side between the
+   stock kernel (OK) and the fork (KO) — requires the stock kernel symbols.
+6. User side: instrument the ACPI `_SB.GSIA._CRS` → `pci_intr_establish`
+   chain of `rumpdisk`/`pci-arbiter` (IPC `device_intr`/`memory object`)
+   to see *where* the thread blocks at the hang (see **4th pass**:
+   the claim "the kernel itself is alive" is **false** — it is precisely the
+   opposite, the kernel clock is dead, so no timeout ever expires; the thread
+   that "blocks" is just waiting for a delay that never arrives).
 
-### 4e passe : piège `FRESH` verrouillé, piste PIT écartée, **cause mesurée = horloge maître morte** (18/10/2026)
+### 4th pass: locked `FRESH` trap, PIT lead dropped, **measured cause = dead master clock** (18/10/2026)
 
-Objectif de la passe : (1) verrouiller le piège `FRESH=1` (un overlay neuf
-repartait du noyau **stock** sans le dire) ; (2) tester la piste
-`pit_udelay(1000)` de l'attente de l'AP ; (3) au « gel », localiser par GDB où
-dort `rumpdisk`.
+Goals of this pass: (1) lock down the `FRESH=1` trap (a fresh overlay
+silently restarted from the **stock** kernel) ; (2) test the
+`pit_udelay(1000)` lead for the AP wait ; (3) at the "hang", locate with GDB
+where `rumpdisk` sleeps.
 
-#### 1) Piège `FRESH=1` verrouillé (launcher)
+#### 1) `FRESH=1` trap locked down (launcher)
 
-`hurd-dev.qcow2` (image de base) contient le noyau **stock** : un overlay neuf
-(`FRESH=1`) chaîné sur la base démarrait donc le **stock**, pas le fork. Toutes
-les manches existantes utilisaient bien `OVL=… FRESH=0`, mais le piège était
-silencieux ; il est désormais impossible à déclencher par accident :
+`hurd-dev.qcow2` (base image) contains the **stock** kernel: a fresh overlay
+(`FRESH=1`) chained on the base thus booted the **stock** kernel, not the
+fork. All existing rounds did use `OVL=… FRESH=0`, but the trap was silent;
+it is now impossible to trigger by accident:
 
-- nouvelle variable `MASTER` (défaut `ovl-fork-master.qcow2`) = overlay **maître**
-  qui porte le noyau fork déjà installé ;
-- avec `FRESH=1`, le launcher **refuse (exit 1)** si le maître est absent, et crée
-  l'overlay **chaîné sur le maître** — chaîne qcow2 à 3 niveaux
-  `ovl-trial ← ovl-fork-master ← ovl-stock-smp2 ← hurd-dev.qcow2`, validée ;
-- `STOCK=1` permet (en connaissance de cause) de chaîner sur la base pour tester
-  le stock.
+- new variable `MASTER` (default `ovl-fork-master.qcow2`) = **master**
+  overlay carrying the already-installed fork kernel;
+- with `FRESH=1`, the launcher **refuses (exit 1)** if the master is absent, and
+  creates the overlay **chained on the master** — 3-level qcow2 chain
+  `ovl-trial ← ovl-fork-master ← ovl-stock-smp2 ← hurd-dev.qcow2`, validated ;
+- `STOCK=1` allows (knowingly) chaining on the base to test the stock kernel.
 
-#### 2) Piste `pit_udelay(1000)` de l'attente AP : **écartée par la mesure**
+#### 2) `pit_udelay(1000)` AP-wait lead: **dropped by measurement**
 
-Build des variantes dans `/tmp/gm` (`src` = fork HEAD `a4237652`,
+Variant builds in `/tmp/gm` (`src` = fork HEAD `a4237652`,
 `gcc 14.2.0`, `--host=x86_64-pc-gnu --enable-ncpus=2`) :
 
-| noyau | particularité | md5 du `gnumach-…up.gz` |
+| kernel | specific trait | md5 of `gnumach-…up.gz` |
 |---|---|---|
-| **A** | HEAD + marqueur `k4-A` | `de1518e0517d160dcda0858e6a4057f7` |
-| **B** | attente AP en `cpu_pause()` au lieu de `pit_udelay()` | `51241aed847422c7a51486d43518c52f` |
+| **A** | HEAD + `k4-A` marker | `de1518e0517d160dcda0858e6a4057f7` |
+| **B** | AP wait in `cpu_pause()` instead of `pit_udelay()` | `51241aed847422c7a51486d43518c52f` |
 
-Matrice (overlays jetables, `vgaprobe.py` en fin de manche) :
+Matrix (disposable overlays, `vgaprobe.py` at the end of each round):
 
-| noyau | option | WEDGE | BOOT |
+| kernel | option | WEDGE | BOOT |
 |---|---|---|---|
 | fork (ref) | `-smp 2` | 3 | 0 |
 | A (`k4-A`) | `-smp 2` | 5 | 1 |
 | **B (`cpu_pause`)** | `-smp 2` | **6** | **0** |
 | B | `-smp 2 maxcpus=1` | 0 | 6 |
 
-⇒ remplacer `pit_udelay()` par `cpu_pause()` ne change **rien** (6/6 gel) : la
-piste PIT de l'attente AP est **morte**. Vérification statique : `pit_udelay` est
-**upstream** (`38e82f35`, remplace `hpet_udelay` dans `smp.c`) et n'utilise que le
-**canal 2** (`PIT_C2|PIT_LOADMODE|PIT_ONESHOTMODE`) ; seul `clkstart()`
-(`pit.c:123`) touche le canal 0 (`pit0_mode = PIT_C0|PIT_SQUAREMODE|PIT_READMODE`,
-`pitctl_port`/`pitctr0_port` écrits uniquement en `pit.c:137/140/142`). Seul
-`pit_udelay(1000)` de `mp_desc.c` est fork-only (`99a21a39`).
+⇒ replacing `pit_udelay()` with `cpu_pause()` changes **nothing** (6/6 hang):
+the PIT lead for the AP wait is **dead**. Static check: `pit_udelay` is
+**upstream** (`38e82f35`, replaces `hpet_udelay` in `smp.c`) and only uses
+**channel 2** (`PIT_C2|PIT_LOADMODE|PIT_ONESHOTMODE`) ; only `clkstart()`
+(`pit.c:123`) touches channel 0 (`pit0_mode = PIT_C0|PIT_SQUAREMODE|PIT_READMODE`,
+`pitctl_port`/`pitctr0_port` written only at `pit.c:137/140/142`). Only
+`pit_udelay(1000)` from `mp_desc.c` is fork-only (`99a21a39`).
 
-#### 3) Au « gel » : le guest n'était pas mort — l'**horloge** l'était
+#### 3) At the "hang": the guest was not dead — the **clock** was
 
-Première surprise (GDB) : une manche `-smp 2` (overlay `ovl-t3`) atteint en fait
-**`login:`**, répond en SSH (`nproc = 2`, `up 74 seconds`, 61 processus, 7
-sessions) ⇒ le classement « WEDGE » par lecture d'écran est un **faux positif**.
-Côté noyau, la backtrace de CPU0 dans cet état est
-`host_get_uptime64 → time_value64_add_hpc → hpclock_read_counter` : une **boucle
-d'interrogation utilisateur** (poll de l'heure), **pas** un `wait_event`.
+First surprise (GDB): a `-smp 2` round (overlay `ovl-t3`) actually reaches
+**`login:`**, responds to SSH (`nproc = 2`, `up 74 seconds`, 61 processes, 7
+sessions) ⇒ the screen-read "WEDGE" classification is a **false positive**.
+Kernel-side, CPU0's backtrace in that state is
+`host_get_uptime64 → time_value64_add_hpc → hpclock_read_counter`: a user
+**polling loop** (clock poll), **not** a `wait_event`.
 
-Thermomètre noyau (lu **en mémoire guest** par le moniteur QEMU, jamais par
-gdb — cf. commandes ci-dessous) :
+Kernel thermometer (read **in guest memory** via the QEMU monitor, never via
+gdb — cf. commands below):
 
-| | `-smp 1` (témoin) | `-smp 2` (deux manches, **sans** gdb) |
+| | `-smp 1` (control) | `-smp 2` (two rounds, **no** gdb) |
 |---|---|---|
-| `uptime` / `mtime->uptime_value` | **+20,000 s en 20 s** | **figé** à `0,120`…`0,130 s` sur 15–30 s |
-| `last_hpc_read` | avance (wrap 2³²) | **inchangé** (`12281282 → 12281282`) |
-| écran | `login:` à **T+30 s** | figé sur la numérotation PCI rump (`[ 1.0000050]`) |
-| `login:` atteint | oui | **non** (≥ 640 s) |
+| `uptime` / `mtime->uptime_value` | **+20,000 s in 20 s** | **frozen** at `0.120`…`0.130 s` over 15–30 s |
+| `last_hpc_read` | advances (2³² wrap) | **unchanged** (`12281282 → 12281282`) |
+| screen | `login:` at **T+30 s** | frozen on rump PCI numbering (`[ 1.0000050]`) |
+| `login:` reached | yes | **no** (≥ 640 s) |
 | `master_cpu` | `0` | `0` |
 
-**Cause mécaniste (mesurée)** : sous `-smp 2`, la **CPU maître (0) ne reçoit plus
-l'interruption d'horloge ~100 Hz dès que l'AP est démarré**, alors que le guest,
-lui, vit. Or `clock_interrupt()` (`kern/mach_clock.c`) n'avance l'heure
-(`time`/`uptime`), les **timeouts** et `last_hpc_read` **que sur `master_cpu`**
-(`if (my_cpu == master_cpu)` ; `last_hpc_read = hpclock_read_counter()` l.341).
-Conséquence en chaîne :
+**Mechanistic cause (measured)**: under `-smp 2`, the **master CPU (0) stops
+receiving the ~100 Hz clock interrupt as soon as the AP is started**, while
+the guest itself is alive. But `clock_interrupt()`
+(`kern/mach_clock.c`) advances the time (`time`/`uptime`), the **timeouts**
+and `last_hpc_read` **only on `master_cpu`** (`if (my_cpu == master_cpu)` ;
+`last_hpc_read = hpclock_read_counter()` l.341). Chain of consequences:
 
-1. l'heure du noyau **et** de l'utilisateur (`host_get_uptime64`) **gèle** ;
-2. plus aucun **timeout** n'expire et plus aucune **préemption** (quantum /
-   `sched_tick`) n'a lieu sur la CPU 0 ⇒ le fil utilisateur qui interroge
-   l'horloge **tourne sans fin** ;
-3. `rumpdisk` attend un délai/timeout d'attache AHCI qui **n'arrive jamais** ⇒
-   blocage à `ahcisata0: 64-bit DMA` = **la cause racine du « gel I/O »** ; ce
-   n'est **ni** un défaut de routage IOAPIC **ni** un défaut d'I/O.
+1. the kernel **and** user clock (`host_get_uptime64`) **freeze** ;
+2. no **timeout** expires anymore and no **preemption** (quantum /
+   `sched_tick`) happens on CPU 0 ⇒ the user thread polling the clock
+   **spins forever** ;
+3. `rumpdisk` waits for an AHCI attach delay/timeout that **never arrives** ⇒
+   stall at `ahcisata0: 64-bit DMA` = **the root cause of the "I/O hang"**;
+   it is **neither** an IOAPIC routing defect **nor** an I/O defect.
 
-Preuves APIC/IRQ (moniteur) :
+APIC/IRQ evidence (monitor):
 
-- `info pic` : **pin 2 = `0x0000000000000030` dest=0 vec=48, actif-haut, edge,
-  non masqué** — **identique** sous `-smp 1` (qui marche) et `-smp 2` (qui gèle)
-  ⇒ ce n'est pas un masquage/déroutage de l'IOAPIC (pins 0-4 identiques) ;
-- `info lapic` : la **LVTT de CPU0 est masquée/one-shot** (`initial_count =
-  0xffffffff`, reste de `calibrate_lapic_timer()`/`timer_measure_10x_apic_hz()`
-  qui finit par `lvt_timer.r |= LAPIC_DISABLE`) — **dans les deux cas `-smp 1` et
-  `-smp 2`** ⇒ le tick de CPU0 **ne vient pas** de son minuteur LAPIC ;
-- sous `-smp 2`, la **CPU1 (AP) a, elle, un minuteur LAPIC périodique**
-  (`LVTT 0x00020030 periodic`, `initial_count = 5859840`, vec 48) ⇒ **c'est le
-  `hardclock` ≈ 100 Hz mesuré en 2e/3e passes : un tick sur l'AP, qui
-  n'avance pas l'heure (`my_cpu != master_cpu`)**. **Correction explicite** de la
-  2e/3e passe : « IRQ délivrées, horloge OK » est **faux** — les IRQ d'horloge
-  sont délivrées à **l'AP**, pas à la maître ; `master_cpu` vaut 0 dans les deux
-  cas (ce n'est donc pas une erreur de numérotation de CPU).
-- compte rendu cohérent avec `-smp 1` : pas d'AP, donc la maître génère elle-même
-  son tick (PIT remappé, pin 2) et l'horloge vit ⇒ `-smp 1` **reste la
-  référence fonctionnelle**.
+- `info pic`: **pin 2 = `0x0000000000000030` dest=0 vec=48, active-high, edge,
+  unmasked** — **identical** under `-smp 1` (which works) and `-smp 2` (which
+  hangs) ⇒ not an IOAPIC masking/misrouting (pins 0-4 identical) ;
+- `info lapic`: **CPU0's LVTT is masked/one-shot** (`initial_count =
+  0xffffffff`, leftover from `calibrate_lapic_timer()` /
+  `timer_measure_10x_apic_hz()` which ends with `lvt_timer.r |= LAPIC_DISABLE`) —
+  in **both** cases `-smp 1` and `-smp 2` ⇒ CPU0's tick **does not come** from
+  its LAPIC timer ;
+- under `-smp 2`, **CPU1 (AP) does have a periodic LAPIC timer**
+  (`LVTT 0x00020030 periodic`, `initial_count = 5859840`, vec 48) ⇒ this is
+  the `hardclock` ≈ 100 Hz measured in the 2nd/3rd passes: a tick on the AP,
+  which does not advance the clock (`my_cpu != master_cpu`). **Explicit
+  correction** of the 2nd/3rd pass: "IRQs delivered, clock OK" is **wrong** —
+  the clock IRQs are delivered to **the AP**, not to the master; `master_cpu`
+  is 0 in both cases (so this is not a CPU numbering error).
+- account consistent with `-smp 1`: no AP, so the master generates its own
+  tick (remapped PIT, pin 2) and the clock lives ⇒ `-smp 1` **remains the
+  working reference**.
 
-Zone restante à trancher (**5e passe**) — **aucun patch noyau** (le défaut
-instruction-par-instruction n'est pas encore isolé) :
+Remaining zone to settle (**5th pass**) — **no kernel patch** (the
+defect is not instruction-level isolated yet):
 
-- seul code exécuté **exclusivement quand l'AP démarre** : `start_other_cpus()`
-  (`mp_desc.c:280`) — `splhigh()` → `lapic_disable()` (`:314`) → attente AP
-  bornée (`pit_udelay(1000)`, canal 2, `:334`) → `pmap_remove_temporary_mapping()`
-  → `interrupt_processor()` → `lapic_enable()` (`:360`). Le `spl` n'est **pas**
-  resté haut (`TPR = 0x00` au gel) ⇒ suspect principal = la paire
-  `lapic_disable()`/`lapic_enable()` (ou la séquence d'attente AP) ;
-- détail concordant : `startrtclock()` (`model_dep.c:926`) n'appelle
-  `lapic_enable_timer()` **que si `cpu_number() != 0`** ⇒ sur CPU0 le minuteur
-  LAPIC est volontairement laissé masqué (masqué par la calibration) et c'est
-  bien le **PIT remappé (pin 2)** qui doit fournir le tick de la maître ; c'est
-  cette source-là qui se tarit sous `-smp 2` ;
-- instrumentation prévue : compteurs **par CPU** (ou point d'arrêt gdb) dans
-  `hardclock`/`clock_interrupt`, lus **avant/après chaque étape** de
-  `start_other_cpus()`, pour voir **à quelle instruction le tick maître
-  disparaît** — c'est la première fois qu'on dispose d'un effet **binaire et
-  reproductible** (horloge vivante vs figée) à instrumenter.
+- only code executed **exclusively when the AP starts**: `start_other_cpus()`
+  (`mp_desc.c:280`) — `splhigh()` → `lapic_disable()` (`:314`) → bounded AP
+  wait (`pit_udelay(1000)`, channel 2, `:334`) →
+  `pmap_remove_temporary_mapping()` → `interrupt_processor()` →
+  `lapic_enable()` (`:360`). The `spl` is **not** left high (`TPR = 0x00` at
+  the hang) ⇒ prime suspect = the `lapic_disable()`/`lapic_enable()` pair (or
+  the AP wait sequence) ;
+- corroborating detail: `startrtclock()` (`model_dep.c:926`) calls
+  `lapic_enable_timer()` **only if `cpu_number() != 0`** ⇒ on CPU0 the LAPIC
+  timer is deliberately left masked (masked by the calibration) and it is
+  indeed the **remapped PIT (pin 2)** that must supply the master's tick;
+  that source is what dries up under `-smp 2` ;
+- planned instrumentation: **per-CPU** counters (or gdb breakpoint) in
+  `hardclock`/`clock_interrupt`, read **before/after each step** of
+  `start_other_cpus()`, to see **at which instruction the master tick
+  disappears** — this is the first time we have a **binary and reproducible**
+  effect (live vs frozen clock) to instrument.
 
-#### Méthodologie (corrections de cette passe)
+#### Methodology (corrections from this pass)
 
-- **Le classement « gel » par lecture de l'écran est trompeur** (faux positif
-  constaté : une manche « gelée » boote en fait). Ne lire l'écran qu'**une seule
-  fois** en fin de manche (l'échantillonnage continu, `xp` répétés, tient le BQL
-  de QEMU et désynchronise les vCPU ⇒ il fausse le taux de gel) ; classer BOOT
-  sur la présence de `login:` / `debian tty1` (le serveur console Hurd efface
-  l'écran et écrit en haut).
-- **Ne jamais mesurer une VM en pause** : un `gdb` tué par `timeout` **sans
-  `detach`** laisse QEMU `paused` sans client ⇒ SSH « Connection timed out
-  during banner exchange ». Toujours finir par `detach` et vérifier
+- **The screen-read "hang" classification is misleading** (observed false
+  positive: a "hung" round actually boots). Read the screen only **once**, at
+  the end of the round (continuous sampling, repeated `xp`, holds QEMU's BQL
+  and desynchronizes the vCPUs ⇒ it skews the hang rate); classify BOOT on
+  the presence of `login:` / `debian tty1` (the Hurd console server clears
+  the screen and writes at the top).
+- **Never measure a paused VM**: a `gdb` killed by `timeout` **without
+  `detach`** leaves QEMU `paused` without a client ⇒ SSH "Connection timed
+  out during banner exchange". Always end with `detach` and check
   `info status` = `running`.
-- Sous `kernel-irqchip=on`, `info pic`/`info irq` reflètent l'IOAPIC **KVM** et
-  sont partiels/incomplets ; s'appuyer sur les **compteurs noyau** (`uptime`,
-  `last_hpc_read`, `mtime`, `master_cpu`), lus en **mémoire guest** via le
-  moniteur.
-- LAPIC/IOAPIC non lisibles depuis l'hôte quand KVM possède l'irqchip :
-  utiliser HMP `cpu N` puis `info lapic`.
+- Under `kernel-irqchip=on`, `info pic`/`info irq` reflect the **KVM** IOAPIC
+  and are partial/incomplete; rely on the **kernel counters** (`uptime`,
+  `last_hpc_read`, `mtime`, `master_cpu`), read in **guest memory** via the
+  monitor.
+- LAPIC/IOAPIC not readable from the host when KVM owns the irqchip:
+  use HMP `cpu N` then `info lapic`.
 
-#### Reproduire (4e passe)
+#### Reproduce (4th pass)
 
 ```sh
-# témoin -smp 1 (horloge vivante) vs -smp 2 (horloge morte) :
+# control -smp 1 (live clock) vs -smp 2 (dead clock):
 cp /home/ben/hurd-fork/vm/ovl-stock-smp2.qcow2 /home/ben/hurd-fork/vm/ovl-exp-C1.qcow2
 cd /home/ben/hurd-fork/project/vm
 SMP=1 FRESH=0 OVL=/home/ben/hurd-fork/vm/ovl-exp-C1.qcow2 MON=/tmp/exp-C1-mon \
   SSH_PORT=2801 VIOIF_PORT=2901 ./run-hurd64-smp.sh /home/ben/hurd-fork/vm/hurd-dev.qcow2
-# (remplacer SMP=1 par SMP=2, et C1 par C2, pour le cas qui gèle)
+# (replace SMP=1 with SMP=2, and C1 with C2, for the hanging case)
 
-# thermomètre noyau : lire uptime / mtime->uptime_value / last_hpc_read / master_cpu
-# (symboles du fork : uptime 0xffffffff810ba2b0, mtime 0xffffffff810b8eb0,
+# kernel thermometer: read uptime / mtime->uptime_value / last_hpc_read / master_cpu
+# (fork symbols: uptime 0xffffffff810ba2b0, mtime 0xffffffff810b8eb0,
 #  last_hpc_read 0xffffffff810b8eb8, master_cpu 0xffffffff810ba8c8) :
 printf 'x/2gx 0xffffffff810ba2b0\nx/wx 0xffffffff810b8eb8\nx/wx 0xffffffff810ba8c8\n' \
   | socat - UNIX-CONNECT:/tmp/exp-C1-mon
-# relire 20 s plus tard : -smp 1 => uptime +20,000000000 ; -smp 2 => figé.
-# info lapic (par CPU) et info pic :
+# re-read 20 s later: -smp 1 => uptime +20,000000000 ; -smp 2 => frozen.
+# info lapic (per CPU) and info pic:
 printf 'cpu 0\ninfo lapic\ninfo pic\n' | socat - UNIX-CONNECT:/tmp/exp-C1-mon
 
-# manches répétées BOOT/WEDGE (une seule lecture d'écran, contrôle SSH sur BOOT) :
+# repeated BOOT/WEDGE rounds (a single screen read, SSH check on BOOT) :
 SMP=2 WAIT=85 vm/trials-smp.sh /home/ben/hurd-fork/vm/ovl-fork-master.qcow2 6
 SMP=2 WAIT=85 vm/trials-smp.sh /home/ben/hurd-fork/vm/ovl-fork-master.qcow2 6 maxcpus /tmp/gnumach-new
 ```
 
-## Virtio stockage (`virtio-blk` / `ld_virtio`) (17/10/2026) — recette prête, non exécutable ici
+## Virtio storage (`virtio-blk` / `ld_virtio`) (17/10/2026) — recipe ready, not executable here
 
-Objectif : étendre la recette rump virtio (déjà OK pour
-`librumpdev_pci_if_vioif`) au **stockage** (`librumpdev_virtio_ld`), puis voir
-si `rumpdisk` détecte un disque `ld0`.
+Goal: extend the virtio rump recipe (already OK for
+`librumpdev_pci_if_vioif`) to **storage** (`librumpdev_virtio_ld`), then see
+whether `rumpdisk` detects an `ld0` disk.
 
-### État de l'outillage
+### Tooling state
 
-- `patches/build/build-virtio.sh` ne construit que le **réseau** :
-  `libpci_virtio` (`dev/pci/virtio.c` + `virtio_pci.c`) et
-  `libvirtio_if_vioif` (`dev/pci/if_vioif.c`). **Aucun** `ld_virtio`.
-- La recette `ld_virtio` **serait la même** : `build_lib libvirtio_ld
-  $S/dev/pci/ld_virtio.c $R/dev/lib/component_simple.c` avec
-  `IONAME=LD_VIRTIO.ioconf`, plus le même correctif (`<machine/cpu.h>` → rump
-  + `-D_RUMPKERNEL`) : le blocage `curlwp`/`%gs` est identique (code PCI rump).
-  Le front-end PCI (`libpci_virtio` + `virtio_pci_glue.c`) est déjà là et
-  suffit pour attacher `ld_virtio` au bus `virtio`.
-- **MAIS** la construction exige l'arbre source **NetBSD 2025-01**
-  (`$HOME/nbsrc25` = `sys` + `common` + `rump`) **et** le `tooldir`
-  (`config(1)` + gcc cross). Cet arbre est **absent** de l'hôte
-  (`/home/ben/nbsrc25`, `~/rumplib`, `~/ovr` : inexistants) **et** du guest
-  (`/home/demo/nbsrc25` : inexistant ; seul
-  `~/hurd-build/rumpnet/rumpnet-vioif-test` subsiste).
-  ⇒ **`ld_virtio` ne peut pas être compilé dans cet environnement.**
+- `patches/build/build-virtio.sh` only builds the **network**:
+  `libpci_virtio` (`dev/pci/virtio.c` + `virtio_pci.c`) and
+  `libvirtio_if_vioif` (`dev/pci/if_vioif.c`). **No** `ld_virtio`.
+- The `ld_virtio` recipe **would be the same**: `build_lib libvirtio_ld
+  $S/dev/pci/ld_virtio.c $R/dev/lib/component_simple.c` with
+  `IONAME=LD_VIRTIO.ioconf`, plus the same fix (`<machine/cpu.h>` → rump
+  + `-D_RUMPKERNEL`): the `curlwp`/`%gs` stall is identical (rump PCI code).
+  The PCI front-end (`libpci_virtio` + `virtio_pci_glue.c`) is already there
+  and is enough to attach `ld_virtio` to the `virtio` bus.
+- **BUT** the build requires the **NetBSD 2025-01** source tree
+  (`$HOME/nbsrc25` = `sys` + `common` + `rump`) **and** the `tooldir`
+  (`config(1)` + cross gcc). That tree is **absent** from the host
+  (`/home/ben/nbsrc25`, `~/rumplib`, `~/ovr`: nonexistent) **and** from the
+  guest (`/home/demo/nbsrc25`: nonexistent ; only
+  `~/hurd-build/rumpnet/rumpnet-vioif-test` remains).
+  ⇒ **`ld_virtio` cannot be compiled in this environment.**
 
-### Côté paquets (guest)
+### Packages side (guest)
 
-- Debian fournit les rump **runtime** `0~20250111-7` :
+- Debian provides the rump **runtime** `0~20250111-7`:
   `librumpdev_ahcisata.so`, `librumpdev_ata.so`, `librumpdev_disk.so`,
-  `librumpdev_pci.so`… mais **aucun `librumpdev_virtio*`** (Debian a désactivé
-  virtio côté rump : « Fix virtio later »). `apt-cache search rump` le
-  confirme : aucun paquet `*virtio*` (ni dev ni runtime). D'où le besoin de
-  notre build maison (vioif).
+  `librumpdev_pci.so`… but **no `librumpdev_virtio*`** (Debian disabled
+  virtio on the rump side: "Fix virtio later"). `apt-cache search rump`
+  confirms it: no `*virtio*` package (neither dev nor runtime). Hence the
+  need for our in-house build (vioif).
 
-### Test disque virtio secondaire
+### Secondary virtio disk test
 
-- `vm/run-hurd64-vioif.sh` accepte maintenant `BLK=1` (+ `BLKIMG`, `BLKSIZE`) :
-  ajoute `-drive file=$BLKIMG,if=none,id=vd0,format=raw -device
+- `vm/run-hurd64-vioif.sh` now accepts `BLK=1` (+ `BLKIMG`, `BLKSIZE`):
+  adds `-drive file=$BLKIMG,if=none,id=vd0,format=raw -device
   virtio-blk-pci,drive=vd0`.
-- Boot `-smp 1`, disque 64 Mo attaché :
-  - QEMU voit le contrôleur : `info pci` →
+- Boot `-smp 1`, 64 MB disk attached:
+  - QEMU sees the controller: `info pci` →
     `SCSI controller: PCI device 1af4:1001` (vendor `1af4` = virtio,
     `0x1001` = virtio-blk) ;
-  - côté guest : **pas de `/dev/ld0`** (`ls /dev/ld*` → absent) ; `rumpdisk`
-    (Debian, sans virtio) ignore le périphérique.
-- Conclusion : le disque est présent au niveau PCI mais **aucun pilote ne le
-  prend**. Pour obtenir `ld0` il faudrait **recompiler `rumpdisk`** (source
-  Hurd disponible sur l'hôte) **en y liant** un `librumpdev_virtio_ld` construit
-  avec l'arbre NetBSD — bloqué par l'absence de cet arbre.
+  - guest side: **no `/dev/ld0`** (`ls /dev/ld*` → absent) ; `rumpdisk`
+    (Debian, without virtio) ignores the device.
+- Conclusion: the disk is present at the PCI level but **no driver picks it
+  up**. To get `ld0` one would need to **rebuild `rumpdisk`** (Hurd source
+  available on the host) **linking in** a `librumpdev_virtio_ld` built with
+  the NetBSD tree — blocked by the absence of that tree.
 
-⇒ ÉTAPE 3 : recette identifiée et prête, **non exécutable ici** (dépendance
-source NetBSD manquante) ; test QEMU `ld0` négatif (attendu).
+⇒ STEP 3: recipe identified and ready, **not executable here** (NetBSD
+source dependency missing) ; QEMU `ld0` test negative (expected).
 
-## INCIDENT (17/10/2026) — perte du disque de la VM dev
+## INCIDENT (17/10/2026) — dev VM disk loss
 
-- **Cause racine** : ré-extraction de `vm/debian-hurd-amd64-20260314.img`
-  *alors que* `hurd-dev.qcow2` (overlay dont cette image est le **backing
-  file**) était utilisé. Le tarball ré-extrait contenait une version
-  différente → le backing a changé → vue disque incohérente → corruption fs.
-- **Symptôme** : panic au bootstrap
+- **Root cause**: re-extraction of `vm/debian-hurd-amd64-20260314.img`
+  *while* `hurd-dev.qcow2` (overlay whose backing file is that image) was in
+  use. The re-extracted tarball contained a different version → the backing
+  changed → inconsistent disk view → fs corruption.
+- **Symptom**: bootstrap panic
   `user_bootstrap: Cannot load user executable module (error code 6000): exec`
-  = `EX_NOT_EXECUTABLE`. En cause : `/lib/x86_64-gnu/ld-x86-64.so.1`
-  (le module `exec` de GRUB est en fait `ld.so`) corrompu — son contenu était
-  devenu une archive `ar`.
-- **Tentatives** : `e2fsck -y` (2 passes, fs redevenu « clean ») +
-  restauration de `ld.so` depuis l'image pristine → plus de panic, mais
-  blocage définitif au bootstrap (serveur ext2fs/exec ne démarre pas).
-  ⇒ disque irrécupérable. Conservé : `hurd-dev.qcow2.corrupt`,
+  = `EX_NOT_EXECUTABLE`. Culprit: `/lib/x86_64-gnu/ld-x86-64.so.1`
+  (the `exec` module mounted by GRUB is actually `ld.so`) corrupted — its
+  content had turned into an `ar` archive.
+- **Attempts**: `e2fsck -y` (2 passes, fs back to "clean") +
+  restoring `ld.so` from the pristine image → no more panic, but a definitive
+  hang at bootstrap (ext2fs/exec servers do not start).
+  ⇒ unrecoverable disk. Kept: `hurd-dev.qcow2.corrupt`,
   `hurd-dev.qcow2.fixed-corrupt`.
-- **Leçon** : ne jamais re-extraire/écraser l'image de base d'un overlay
-  pendant que l'overlay existe ; préférer des copies **autonomes**
-  (`qemu-img convert`) sans backing file.
+- **Lesson**: never re-extract/overwrite the base image of an overlay while
+  the overlay exists; prefer **autonomous** copies (`qemu-img convert`)
+  without a backing file.
 
-## Reconstruction de la VM dev (17/10/2026)
+## Dev VM rebuild (17/10/2026)
 
-- Disque neuf **autonome** : `qemu-img convert debian-hurd-amd64-20260314.img
-  → hurd-dev.qcow2` (plus de backing file).
-- Réseau : `netdde`/e1000 (`10.0.2.15`), SSH par **clé** (port 2222) ;
-  `demo` (dans `sudo`), mot de passe `demo`. `apt` OK.
-- Artefacts rump récupérés depuis le disque corrompu (debugfs) :
-  binaire `.../rumpnet/rumpnet-vioif-test`, libs `/usr/lib/librump*.so*`
-  (114 fichiers), scripts. **glibc** doit être ≥ **2.43** (les binaires rump
-  exigent `GLIBC_2.43`) → `libc0.3` mis à jour `2.42 → 2.43-7`.
-- **vioif** : démarre et s'attache **seulement avec 4 Go de RAM**
-  (cf. § « Résolution vioif » ci-dessous). En 2 Go :
+- Fresh **autonomous** disk: `qemu-img convert debian-hurd-amd64-20260314.img
+  → hurd-dev.qcow2` (no more backing file).
+- Network: `netdde`/e1000 (`10.0.2.15`), SSH by **key** (port 2222) ;
+  `demo` (in `sudo`), password `demo`. `apt` OK.
+- Rump artifacts recovered from the corrupt disk (debugfs):
+  binary `.../rumpnet/rumpnet-vioif-test`, libs `/usr/lib/librump*.so*`
+  (114 files), scripts. **glibc** must be ≥ **2.43** (the rump binaries
+  require `GLIBC_2.43`) → `libc0.3` upgraded `2.42 → 2.43-7`.
+- **vioif**: starts and attaches **only with 4 GB of RAM**
+  (cf. § "vioif resolution" below). With 2 GB:
   `virtio0: virtqueue 0 for rx0 allocation failed, error code 1`.
-- **Console pure / headless** : plus de X11/XFCE (ne pas installer
+- **Pure console / headless**: no more X11/XFCE (do not install
   `xfce4`/`xdm`/Xorg).
 
-## Résolution vioif / bascule réseau (17/10/2026)
+## vioif resolution / network switch (17/10/2026)
 
-- **Attache AU BOOT = OK (chemin retenu).** `/etc/network/interfaces` =
-  `scripts/interfaces.vioif` : `auto /dev/vioif0` +
-  `pre-up /usr/local/sbin/start-rumpnet.sh` ; `eth0` en secours non-auto.
-  Validé après reboot sur la VM dev : `ifconfig /dev/vioif0` = `10.0.2.15`,
-  `ping` gateway + `8.8.8.8`, DNS, HTTPS (`wget` rc=0), SSH hôte `2223`.
-  `start-rumpnet.sh` lance bien le translator `rumpnet-vioif-test` puis le
+- **Boot-time attach = OK (chosen path).** `/etc/network/interfaces` =
+  `scripts/interfaces.vioif`: `auto /dev/vioif0` +
+  `pre-up /usr/local/sbin/start-rumpnet.sh` ; `eth0` as non-auto fallback.
+  Validated after reboot on the dev VM: `ifconfig /dev/vioif0` = `10.0.2.15`,
+  `ping` gateway + `8.8.8.8`, DNS, HTTPS (`wget` rc=0), SSH host `2223`.
+  `start-rumpnet.sh` does start the `rumpnet-vioif-test` translator then the
   devnode `/dev/vioif0` (log `/tmp/start-rumpnet.log`).
-- **4 Go obligatoires.** En 2 Go le pilote ne s'attache pas :
+- **4 GB mandatory.** With 2 GB the driver does not attach:
   `virtio0: virtqueue 0 for rx0 allocation failed, error code 1`.
-  En 4 Go : `virtio0: interrupting at pausebreak`, IRQ OK, process vivant.
-  D'où `-m 4G` dans `vm/run-*.sh`.
-- **La bascule À CHAUD rend la machine inutilisable.** Faire
-  `ifconfig /dev/eth0 down` sur un système vivant où rumpnet tourne →
-  messages noyau `irq handler [11]: release a dead delivery port …` puis
-  `still 1 unacked irqs in entry …` ; réseau mort **et** console VGA qui
-  n'écho plus ; noyau en `machine_idle` (`RIP ffffffff8100c7fd`) →
-  **reboot obligatoire**. Reproduit sur un overlay jetable.
-  ⇒ `scripts/net-switch-vioif.sh` est **verrouillé** (refus par défaut ;
-  cf. en-tête du script) : ne plus basculer à chaud, rebooter.
-- **Nuance / diagnostic corrigé** : un simple `ifconfig /dev/eth0 down`
-  *sans* rumpnet actif **ne fait pas** crasher `pfinet` — il reste vivant
-  (vérifié sur la console via `ps`). Les diagnostics « pfinet a crashé »
-  faits depuis SSH étaient biaisés : couper `eth0` coupe aussi la session
-  SSH (qui passe par `eth0`).
-- **Piste A (binaires Hurd du fork) : écartée.** L'ancien disque
-  (`hurd-dev.qcow2.fixed-corrupt`) contenait bien **tout le Hurd du fork**
-  installé (`/hurd/*` + `/lib/x86_64-gnu` en date du 2026-10-08), face au
-  paquet Debian de base `hurd 1:0.9.git20251029-7` (binaires du 2026-03-07) ;
-  `netdde` est identique sur les deux disques. Mais un test A/B (graft du
-  `pfinet` du fork + `libtrivfs/libfshelp/libports/libshouldbeinlibc` du
-  fork) **ne change rien** au blocage → ce n'est pas un bug `pfinet` mais un
-  problème de démontage IRQ à chaud. Les binaires du fork sont conservés
-  hors dépôt dans `~/hurd-fork/recovered/hurd-fork-20261008/` (voir son
-  `README.md`) mais **non nécessaires** — l'attache au boot marche avec les
-  binaires Debian de base.
+  With 4 GB: `virtio0: interrupting at pausebreak`, IRQ OK, process alive.
+  Hence `-m 4G` in `vm/run-*.sh`.
+- **The HOT SWITCH makes the machine unusable.** Doing
+  `ifconfig /dev/eth0 down` on a live system where rumpnet runs →
+  kernel messages `irq handler [11]: release a dead delivery port …` then
+  `irq handler [11]: still 1 unacked irqs in entry …` ; network dead **and**
+  VGA console no longer echoing ; kernel in `machine_idle`
+  (`RIP ffffffff8100c7fd`) → **reboot mandatory**. Reproduced on a
+  disposable overlay.
+  ⇒ `scripts/net-switch-vioif.sh` is **locked** (refused by default ;
+  cf. the script header): no more hot switching, reboot instead.
+- **Nuance / corrected diagnosis**: a plain `ifconfig /dev/eth0 down`
+  *without* rumpnet active **does not** crash `pfinet` — it stays alive
+  (verified on the console via `ps`). The "pfinet has crashed" diagnoses
+  made over SSH were biased: cutting `eth0` also cuts the SSH session
+  (which goes through `eth0`).
+- **Lead A (fork Hurd binaries): dropped.** The old disk
+  (`hurd-dev.qcow2.fixed-corrupt`) did contain **the whole fork Hurd**
+  installed (`/hurd/*` + `/lib/x86_64-gnu` as of 2026-10-08), against the
+  base Debian package `hurd 1:0.9.git20251029-7` (binaries of 2026-03-07) ;
+  `netdde` is identical on both disks. But an A/B test (grafting the fork's
+  `pfinet` + `libtrivfs/libfshelp/libports/libshouldbeinlibc` from the fork)
+  **changes nothing** about the stall → not a `pfinet` bug but a hot IRQ
+  teardown problem. The fork binaries are kept out of the repository in
+  `~/hurd-fork/recovered/hurd-fork-20261008/` (see its `README.md`) but are
+  **not needed** — the boot-time attach works with the base Debian binaries.
 
-## Sécurité disque (consignes permanentes)
+## Disk safety (permanent rules)
 
-- Ne **jamais** démarrer `debian-hurd-amd64-*.img` en écriture.
-- Ne **jamais** ré-extraire/réécraser une image qui sert de *backing file*.
-- `vm/run-*.sh` n'utilisent qu'une copie **autonome** (`hurd-dev.qcow2`,
-  `-m 4G`) ; `run-hurd64-smp.sh` et `run-hurd64-vioif.sh` démarrent en plus
-  sur un **overlay jetable** (`hurd-*-test.qcow2`, recréé à chaque lancement)
-  pour les essais risqués → le disque de dev n'est jamais touché.
-- Sauvegarde d'un état qui marche : `hurd-dev.qcow2.good-20261017`
-  (copie faite VM éteinte proprement).
+- **Never** boot `debian-hurd-amd64-*.img` in write mode.
+- **Never** re-extract/overwrite an image used as a *backing file*.
+- `vm/run-*.sh` only use an **autonomous** copy (`hurd-dev.qcow2`,
+  `-m 4G`) ; `run-hurd64-smp.sh` and `run-hurd64-vioif.sh` additionally start
+  on a **disposable overlay** (`hurd-*-test.qcow2`, recreated at each launch)
+  for risky experiments → the dev disk is never touched.
+- Backup of a working state: `hurd-dev.qcow2.good-20261017`
+  (copy made with the VM cleanly shut down).
 
-## Références
+## References
 
-- FOSDEM 2026 Thibault : x86_64 essentiellement complet (MIG RPC), ~75% Debian.
-- Guix blog 01/03/2026 : 64-bit Hurd, GCC 14, `hurd64-qcow2`, `kernel-arguments ("noide")`.
-- `~/hurd-fork/vm/README-64bit:99-116` pour réseau/disque.
+- FOSDEM 2026 Thibault: x86_64 essentially complete (MIG RPC), ~75% Debian.
+- Guix blog 01/03/2026: 64-bit Hurd, GCC 14, `hurd64-qcow2`, `kernel-arguments ("noide")`.
+- `~/hurd-fork/vm/README-64bit:99-116` for network/disk.

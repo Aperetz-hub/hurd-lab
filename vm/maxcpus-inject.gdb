@@ -1,20 +1,20 @@
 set pagination off
 set confirm off
-# Injecte `maxcpus=1` dans la ligne de commande noyau SANS toucher a GRUB :
-# on ecrit dans la chaine pointee par `kernel_cmdline` (upstream, aucun
-# endroit fixe) pendant l'execution de `smp_init` (le noyau lit la ligne plus
-# tard, dans `smp_data_init`).
+# Injects `maxcpus=1` into the kernel command line WITHOUT touching GRUB:
+# we write into the string pointed to by `kernel_cmdline` (upstream, no
+# fixed location) during the execution of `smp_init` (the kernel reads the
+# line later, in `smp_data_init`).
 #
-# Prerequis : lancer QEMU avec GDB=1 STOP=1 GDBPORT=<port>, puis
-#   gdb -q -batch -x vm/maxcpus-inject.gdb <ELF-du-noyau-teste>
-# et modifier `target remote localhost:1234` si GDBPORT != 1234.
+# Prerequisites: start QEMU with GDB=1 STOP=1 GDBPORT=<port>, then
+#   gdb -q -batch -x vm/maxcpus-inject.gdb <ELF-of-the-kernel-under-test>
+# and adjust `target remote localhost:1234` if GDBPORT != 1234.
 #
-# TOUJOURS finir par `detach` : un script gdb qui s'interrompt sans detach
-# laisse la VM en pause (`info status` = paused) et invalide toute mesure.
+# ALWAYS end with `detach`: a gdb script that aborts without detach leaves
+# the VM paused (`info status` = paused) and invalidates any measurement.
 target remote localhost:1234
 hbreak smp_init
 continue
-printf "=== AT smp_init, cmdline avant : "
+printf "=== AT smp_init, cmdline before : "
 p (char*)kernel_cmdline
 set {char}(((char*)kernel_cmdline)+0) = 'r'
 set {char}(((char*)kernel_cmdline)+1) = 'o'
@@ -49,7 +49,7 @@ set {char}(((char*)kernel_cmdline)+29) = 's'
 set {char}(((char*)kernel_cmdline)+30) = '='
 set {char}(((char*)kernel_cmdline)+31) = '1'
 set {char}(((char*)kernel_cmdline)+32) = 0
-printf "cmdline apres : "
+printf "cmdline after : "
 p (char*)kernel_cmdline
 delete
 detach

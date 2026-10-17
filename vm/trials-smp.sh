@@ -1,23 +1,23 @@
 #!/bin/bash
-# Manches repetees pour classer le gel `-smp 2` (BOOT / WEDGE) d'un noyau
-# donne, sur un overlay JETABLE (le SRC n'est jamais ecrit : on le copie).
+# Repeated rounds to classify the `-smp 2` hang (BOOT / WEDGE) of a given
+# kernel, on a DISPOSABLE overlay (the SRC is never written: we copy it).
 #
-# Principe (lecons des 3e/4e passes) :
-#   * AUCUN echantillonnage continu de l'ecran pendant la manche : chaque
-#     lecture `xp` tient le BQL de QEMU ~ms et desynchronise les vCPU
-#     (un `vgacap.py` en continu fausse le taux de gel). On lit l'ecran UNE
-#     fois, a la fin, via `vgaprobe.py` ;
-#   * le noyau teste est celui installe dans l'overlay SRC (verifie par md5
-#     dans le guest au moment de l'installation) — jamais l'image de base ;
-#   * en cas de BOOT : controle par SSH (`nproc` + md5 du noyau) ;
-#   * `maxcpus` : injection gdb de `maxcpus=1` (AP non demarre), cf.
+# Principle (lessons from the 3rd/4th passes):
+#   * NO continuous screen sampling during the round: each `xp` read holds
+#     QEMU's BQL for ~ms and desynchronizes the vCPUs (continuous
+#     `vgacap.py` skews the hang rate). The screen is read ONCE, at the
+#     end, via `vgaprobe.py` ;
+#   * the kernel under test is the one installed in the SRC overlay
+#     (verified by md5 in the guest at install time) — never the base image ;
+#   * on BOOT: check over SSH (`nproc` + kernel md5) ;
+#   * `maxcpus`: gdb injection of `maxcpus=1` (AP not started), cf.
 #     `vm/maxcpus-inject.gdb`.
 #
-# Usage :
-#   vm/trials-smp.sh <SRC-overlay> [N] [maxcpus] [ELF-du-noyau]
-# Defauts : N=6, SRC=<dir>/ovl-fork-master.qcow2, ELF absent (pas d'injection).
-# Variables : SMP (defaut 2), WAIT (secondes d'attente par manche, defaut 85),
-#             BASE (image de base, defaut ../vm/hurd-dev.qcow2).
+# Usage:
+#   vm/trials-smp.sh <SRC-overlay> [N] [maxcpus] [kernel-ELF]
+# Defaults: N=6, SRC=<dir>/ovl-fork-master.qcow2, ELF absent (no injection).
+# Variables: SMP (default 2), WAIT (per-round wait in seconds, default 85),
+#            BASE (base image, default ../vm/hurd-dev.qcow2).
 set -u
 cd "$(dirname "$0")"
 BASE=${BASE:-/home/ben/hurd-fork/vm/hurd-dev.qcow2}
@@ -29,7 +29,7 @@ SMP=${SMP:-2}
 WAIT=${WAIT:-85}
 GDB=${GDB:-/tmp/gdbroot/usr/bin/gdb}
 GDBLIB="LD_LIBRARY_PATH=/tmp/gdbroot/usr/lib/x86_64-linux-gnu:/tmp/gdbroot/usr/lib"
-[ -f "$SRC" ] || { echo "SRC introuvable: $SRC"; exit 1; }
+[ -f "$SRC" ] || { echo "SRC not found: $SRC"; exit 1; }
 
 for i in $(seq 1 "$N"); do
 	OVL=$(dirname "$SRC")/ovl-trial-$$-$i.qcow2
@@ -61,7 +61,7 @@ for i in $(seq 1 "$N"); do
 	fi
 	sleep "$WAIT"
 	V=$(MON="$MON" python3 vgaprobe.py | tee /tmp/trial-$$-$i.verdict | head -1)
-	echo "manche $MODE #$i => $V"
+	echo "round $MODE #$i => $V"
 	if [ "$V" = BOOT ]; then
 		printf "   ssh : "
 		timeout 25 ssh -o BatchMode=yes -o StrictHostKeyChecking=no \
@@ -74,4 +74,4 @@ for i in $(seq 1 "$N"); do
 	sleep 4
 	rm -f "$MON" "$OVL"
 done
-echo "=== FIN manches $MODE ($SRC) ==="
+echo "=== DONE rounds $MODE ($SRC) ==="

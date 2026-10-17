@@ -1,32 +1,32 @@
 #!/bin/sh
 # ============================================================================
-#  DECONSEILLE - NE PLUS UTILISER (17/10/2026)  -> DESACTIVE par defaut.
+#  DEPRECATED - DO NOT USE (17/10/2026)  -> DISABLED by default.
 #
-#  Bascule A CHAUD de /dev/eth0 (netdde/e1000) vers /dev/vioif0 (rumpnet) sur
-#  une instance pfinet VIVANTE.  Tests sur la VM dev reconstruite : cette
-#  bascule rend la machine INUTILISABLE --
+#  HOT SWITCH from /dev/eth0 (netdde/e1000) to /dev/vioif0 (rumpnet) on a
+#  LIVE pfinet instance.  Tests on the rebuilt dev VM: this switch renders
+#  the machine UNUSABLE --
 #     irq handler [11]: release a dead delivery port ...
 #     irq handler [11]: still 1 unacked irqs in entry ...
-#  -> reseau mort, console VGA qui n'echo plus, reboot obligatoire.
-#  (Ce n'est PAS un crash de pfinet : cf. docs/suivi.md § "Resolution vioif".)
+#  -> network dead, VGA console no longer echoing, reboot required.
+#  (This is NOT a pfinet crash: cf. docs/suivi.md § "vioif resolution".)
 #
-#  METHODE SUPPORTEE : attache AU BOOT via /etc/network/interfaces
-#  (scripts/interfaces.vioif : `auto /dev/vioif0` + pre-up start-rumpnet.sh),
-#  puis reboot.  Pour revenir a eth0 :
+#  SUPPORTED METHOD: attach AT BOOT via /etc/network/interfaces
+#  (scripts/interfaces.vioif: `auto /dev/vioif0` + pre-up start-rumpnet.sh),
+#  then reboot.  To go back to eth0:
 #     cp /etc/network/interfaces.eth0.bak /etc/network/interfaces && reboot
 #
-#  Conserve pour reference : refuse de s'executer sauf FORCE=1.
+#  Kept for reference: refuses to run unless FORCE=1.
 # ============================================================================
 set -u
 : "${FORCE:=0}"
 if [ "$FORCE" != "1" ]; then
-	echo "net-switch-vioif.sh: DESACTIVE (la bascule a chaud fige la machine)." >&2
-	echo "  -> attache au boot : /etc/network/interfaces = scripts/interfaces.vioif, puis reboot." >&2
-	echo "  -> pour forcer malgre tout : FORCE=1 $0" >&2
+	echo "net-switch-vioif.sh: DISABLED (the hot switch freezes the machine)." >&2
+	echo "  -> attach at boot: /etc/network/interfaces = scripts/interfaces.vioif, then reboot." >&2
+	echo "  -> to force anyway: FORCE=1 $0" >&2
 	exit 2
 fi
 
-# --- Ancienne logique (a chaud), conservee telle quelle --------------------
+# --- Old (hot-switch) logic, kept as-is ------------------------------------
 LOG=${LOG:-/tmp/net-switch-vioif.log}
 KEEP=${KEEP:-/tmp/keep-vioif}
 WAIT=${WAIT:-120}
@@ -36,9 +36,9 @@ GW=${GW:-10.0.2.2}
 
 exec >"$LOG" 2>&1
 rm -f "$KEEP"
-echo "=== bascule eth0 -> vioif0 ($(date))"
+echo "=== switch eth0 -> vioif0 ($(date))"
 
-# dhclient gere eth0 : le tuer, sinon il re-active eth0.
+# dhclient manages eth0: kill it, otherwise it re-activates eth0.
 pkill -f dhclient 2>/dev/null
 ifconfig /dev/eth0 down
 sleep 1
@@ -48,16 +48,16 @@ ifconfig
 
 if ping -c2 -W2 "$GW"; then echo PING_OK; else echo PING_FAIL; fi
 
-echo "watchdog: attente $WAIT s du drapeau $KEEP (SSH via 2223)..."
+echo "watchdog: waiting $WAIT s for the $KEEP flag (SSH via 2223)..."
 n=0
 while [ "$n" -lt "$WAIT" ]; do
-	[ -f "$KEEP" ] && { echo "KEEP -> vioif conserve"; exit 0; }
+	[ -f "$KEEP" ] && { echo "KEEP -> keeping vioif"; exit 0; }
 	sleep 1
 	n=$(expr "$n" + 1)
 done
 
-echo "=== watchdog: rollback vers eth0"
+echo "=== watchdog: rollback to eth0"
 ifconfig /dev/vioif0 down
 sleep 1
 ifconfig /dev/eth0 "$IP" netmask "$MASK" up
-echo "=== rollback termine ($(date))"
+echo "=== rollback done ($(date))"

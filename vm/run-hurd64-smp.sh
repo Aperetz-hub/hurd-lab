@@ -1,34 +1,35 @@
 #!/bin/bash
-# Test -smp 2 (console pure / headless) sur un OVERLAY JETABLE — le disque de
-# dev et l'overlay maitre ne sont jamais modifies.
-#   * `-smp 2` = gel dans rumpdisk (attache AHCI) avec l'IOAPIC emule par
-#     KVM (`kernel-irqchip=on`, defaut), le plus souvent mais PAS toujours
-#     (gel intermittent : course/timing). Avec `MACHINE=q35,kernel-irqchip=split`
-#     (IOAPIC emule par QEMU) le noyau fork demarre en -smp 2 et le clavier
-#     repond — cf. docs/suivi.md, « Autopsie du gel -smp 2 » (2e/3e passe).
-#   * l'option de boot `maxcpus=N`/`nosmp` (AP non demarre) evite le gel la
-#     plupart du temps (5 boots / 6 mesures en 3e passe) mais pas toujours :
-#     c'est le demarrage de l'AP qui est le declencheur principal, et il reste
-#     une composante de course (cf. docs/suivi.md, 3e passe).
-#   * le noyau du FORK est installe dans l'overlay maitre (MASTER), pas dans
-#     l'image de base : un overlay neuf (FRESH=1) prend donc le maitre comme
-#     fichier de base, sinon on testerait le noyau STOCK sans s'en rendre
-#     compte (piege corrige en 4e passe, cf. docs/suivi.md).
+# -smp 2 test (pure console / headless) on a DISPOSABLE OVERLAY — the dev
+# disk and the master overlay are never modified.
+#   * `-smp 2` = hang in rumpdisk (AHCI attach) with the IOAPIC emulated by
+#     KVM (`kernel-irqchip=on`, default), most of the time but NOT always
+#     (intermittent hang: race/timing). With `MACHINE=q35,kernel-irqchip=split`
+#     (IOAPIC emulated by QEMU) the fork kernel boots at -smp 2 and the
+#     keyboard responds — cf. docs/suivi.md, "Autopsy of the -smp 2 hang"
+#     (2nd/3rd pass).
+#   * the `maxcpus=N`/`nosmp` boot option (AP not started) avoids the hang
+#     most of the time (5 boots / 6 measurements in the 3rd pass) but not
+#     always: the AP startup is the main trigger, and a race component
+#     remains (cf. docs/suivi.md, 3rd pass).
+#   * the FORK kernel is installed in the master overlay (MASTER), not in
+#     the base image: a fresh overlay (FRESH=1) therefore takes the master
+#     as its backing file, otherwise the STOCK kernel would be tested
+#     unawares (trap fixed in the 4th pass, cf. docs/suivi.md).
 #
-# Variables d'environnement :
-#   SMP=2        nb de CPU QEMU (defaut 2)
-#   GDB=1        active le stub GDB de QEMU (`-s`, tcp::1234)
-#   STOP=1       fige la VM a la premiere instruction (`-S`, avec GDB=1)
-#   GDBPORT=1234 port du stub
-#   FRESH=1      recree l'overlay (defaut) ; FRESH=0 le reutilise tel quel
-#   OVL=...      chemin de l'overlay (defaut <dir base>/hurd-smp-test.qcow2)
-#   MASTER=...   overlay MAITRE (noyau fork deja installe) servant de fichier
-#                de base a un overlay neuf (defaut <dir base>/ovl-fork-master.qcow2)
-#   STOCK=1      teste explicitement l'image STOCK (backing = BASE) au lieu du
-#                maitre fork ; refuse par defaut pour ne plus tester le noyau
-#                stock par accident (piege : FRESH=1 sur hurd-dev.qcow2 = stock)
-#   MON=...      socket moniteur QEMU (defaut /tmp/hurd-smp-mon)
-#   MACHINE=...  machine QEMU (defaut q35) ; ex. q35,kernel-irqchip=split
+# Environment variables:
+#   SMP=2        QEMU CPU count (default 2)
+#   GDB=1        enable the QEMU GDB stub (`-s`, tcp::1234)
+#   STOP=1       freeze the VM at the first instruction (`-S`, with GDB=1)
+#   GDBPORT=1234 stub port
+#   FRESH=1      recreate the overlay (default) ; FRESH=0 reuse it as-is
+#   OVL=...      overlay path (default <base dir>/hurd-smp-test.qcow2)
+#   MASTER=...   MASTER overlay (fork kernel already installed) used as the
+#                backing file of a fresh overlay (default <base dir>/ovl-fork-master.qcow2)
+#   STOCK=1      explicitly test the STOCK image (backing = BASE) instead of the
+#                fork master ; refused by default so the stock kernel is no
+#                longer tested by accident (trap: FRESH=1 on hurd-dev.qcow2 = stock)
+#   MON=...      QEMU monitor socket (default /tmp/hurd-smp-mon)
+#   MACHINE=...  QEMU machine (default q35) ; e.g. q35,kernel-irqchip=split
 #
 # Usage: ./run-hurd64-smp.sh [base.qcow2]
 set -e
@@ -46,24 +47,24 @@ MON=${MON:-/tmp/hurd-smp-mon}
 MACHINE=${MACHINE:-q35}
 SSH_PORT=${SSH_PORT:-2222}
 VIOIF_PORT=${VIOIF_PORT:-2223}
-[ -f "$BASE" ] || { echo "base introuvable: $BASE"; exit 1; }
+[ -f "$BASE" ] || { echo "base not found: $BASE"; exit 1; }
 if [ "$FRESH" = "1" ]; then
 	rm -f "$OVL"
 	if [ "$STOCK" = "1" ]; then
 		qemu-img create -f qcow2 -F qcow2 -b "$BASE" "$OVL" >/dev/null
-		echo "ATTENTION: overlay STOCK recree: $OVL (backing $BASE, noyau NON fork)"
+		echo "WARNING: STOCK overlay recreated: $OVL (backing $BASE, kernel NOT fork)"
 	else
 		[ -f "$MASTER" ] || {
-			echo "maitre fork introuvable: $MASTER"
-			echo "  -> le creer une fois: cp ovl-stock-smp2.qcow2 ovl-fork-master.qcow2"
-			echo "  -> ou tester l'image STOCK en connaissance de cause: STOCK=1 $0 ..."
+			echo "fork master not found: $MASTER"
+			echo "  -> create it once: cp ovl-stock-smp2.qcow2 ovl-fork-master.qcow2"
+			echo "  -> or knowingly test the STOCK image: STOCK=1 $0 ..."
 			exit 1; }
 		qemu-img create -f qcow2 -F qcow2 -b "$MASTER" "$OVL" >/dev/null
-		echo "overlay fork recree: $OVL (backing maitre $MASTER)"
+		echo "fork overlay recreated: $OVL (backing master $MASTER)"
 	fi
 else
-	[ -f "$OVL" ] || { echo "overlay absent: $OVL"; exit 1; }
-	echo "overlay reutilise: $OVL"
+	[ -f "$OVL" ] || { echo "overlay missing: $OVL"; exit 1; }
+	echo "overlay reused: $OVL"
 fi
 rm -f "$MON"
 GDBOPTS=()

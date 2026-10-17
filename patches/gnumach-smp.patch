@@ -1,16 +1,15 @@
 From cfe04a21afab5d9cb61bb743cb9c44deda3789d3 Mon Sep 17 00:00:00 2001
 From: ben <ben@localhost>
 Date: Fri, 16 Oct 2026 12:54:56 +0200
-Subject: [PATCH] =?UTF-8?q?smp:=20ne=20plus=20pendre=20le=20boot=20si=20le?=
- =?UTF-8?q?s=20AP=20ne=20d=C3=A9marrent=20pas=20(QEMU=20-smp)?=
+Subject: [PATCH] smp: stop hanging the boot when APs fail to start (QEMU -smp)
 MIME-Version: 1.0
 Content-Type: text/plain; charset=UTF-8
 Content-Transfer-Encoding: 8bit
 
-wait_for_ipi() borné (timeout au lieu d'attente infinie), erreurs
-propagées depuis INIT/SIPI, smp_startup_cpus() retourne -1 au lieu
-de boucler en while(1), et start_other_cpus() dégrade en BSP-only
-avec attente AP bornée à 5s. Comportement mono-CPU inchangé.
+Bound wait_for_ipi() (timeout instead of infinite wait), errors
+propagated from INIT/SIPI, smp_startup_cpus() returns -1 instead of
+looping in while(1), and start_other_cpus() degrades to BSP-only
+with the AP wait bounded to 5 s. Single-CPU behavior unchanged.
 ---
  i386/i386/mp_desc.c | 30 +++++++++++++++++++-------
  i386/i386/smp.c     | 51 +++++++++++++++++++++++++++++++--------------

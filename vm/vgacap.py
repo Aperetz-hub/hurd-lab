@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""Capture continue de l'ecran texte VGA d'une VM QEMU headless.
+"""Continuous capture of a headless QEMU VM's VGA text screen.
 
-Lit le buffer texte VGA (0xb8000, 80x25, paires octet/attribut) via le
-moniteur HMP (`xp/4000cb 0xb8000`) **sans figer la VM** et n'ecrit dans $OUT
-que les ecrans qui changent.
+Reads the VGA text buffer (0xb8000, 80x25, byte/attribute pairs) via the
+HMP monitor (`xp/4000cb 0xb8000`) **without freezing the VM** and writes to
+$OUT only the screens that change.
 
-Pourquoi : en console pure, `-serial file:` reste vide (le noyau gnumach et
-le Hurd ecrivent sur la VGA). Ce script donne donc le log de boot complet,
-y compris les messages noyau qui defilent avant que le console-client ne
-prenne la main.
+Why: in pure console mode, `-serial file:` stays empty (the gnumach kernel
+and the Hurd write to the VGA). This script therefore provides the full
+boot log, including kernel messages that scroll by before the
+console-client takes over.
 
-Usage :
+Usage:
     SOCK=/tmp/hurd-smp-mon OUT=/tmp/bootlog.txt DUR=300 python3 vm/vgacap.py
 
-Variables :
-    SOCK  socket du moniteur QEMU (defaut /tmp/hurd-smp-mon)
-    OUT   fichier de sortie (defaut /tmp/vgacap.log)
-    DUR   duree de capture en secondes (defaut 300)
+Variables:
+    SOCK  QEMU monitor socket (default /tmp/hurd-smp-mon)
+    OUT   output file (default /tmp/vgacap.log)
+    DUR   capture duration in seconds (default 300)
 """
 
 import os
@@ -32,7 +32,7 @@ COLS = 80
 
 
 def _recv_until_prompt(sock):
-    """Lit jusqu'au prochain prompt `(qemu) ` (ou EOF)."""
+    """Read until the next `(qemu) ` prompt (or EOF)."""
     buf = b""
     while b"(qemu) " not in buf:
         data = sock.recv(1 << 16)
@@ -43,18 +43,18 @@ def _recv_until_prompt(sock):
 
 
 def snapshot():
-    """Retourne l'ecran VGA courant sous forme de texte."""
+    """Return the current VGA screen as text."""
     sock = socket.socket(socket.AF_UNIX)
     sock.settimeout(10)
     sock.connect(SOCK)
     try:
-        _recv_until_prompt(sock)        # vider banniere + prompt precedent
+        _recv_until_prompt(sock)        # drain banner + previous prompt
         sock.sendall(b"xp/4000cb 0xb8000\n")
         buf = _recv_until_prompt(sock)
     finally:
         sock.close()
 
-    # HMP rend les octets sous forme 'x' ou '\xNN' : on reconstitue le brut.
+    # HMP returns bytes as 'x' or '\xNN': rebuild the raw content.
     raw = bytearray()
     for tok in re.findall(rb"'((?:\\x[0-9a-fA-F]{2}|[^'])*)'", buf):
         if tok.startswith(b"\\x") and len(tok) == 4:
@@ -62,9 +62,9 @@ def snapshot():
         elif len(tok) == 1:
             raw.append(tok[0])
         else:
-            raw.append(0x20)            # jeton inattendu : espace
+            raw.append(0x20)            # unexpected token: space
 
-    # caractere = octet pair, attribut = octet impair
+    # character = even byte, attribute = odd byte
     chars = "".join(chr(b) if 32 <= b < 127 else " " for b in raw[0::2])
     rows = (chars[i:i + COLS].rstrip() for i in range(0, len(chars), COLS))
     return "\n".join(rows).rstrip("\n")
@@ -84,10 +84,10 @@ def main():
                               % (time.time() - t0, cur))
                     out.flush()
                     last = cur
-            except Exception as exc:    # VM arretee, socket fermee, ...
+            except Exception as exc:    # VM stopped, socket closed, ...
                 out.write("### %s\n" % exc)
                 out.flush()
-            # echantillonnage serre pendant le boot, plus relache ensuite
+            # tight sampling during boot, more relaxed afterwards
             time.sleep(0.4 if time.time() - t0 < 90 else 1.0)
     return 0
 
