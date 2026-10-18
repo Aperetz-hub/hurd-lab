@@ -42,6 +42,12 @@ struct sbiret {
 #define SBI_EID_BASE 0x10UL
 #define SBI_EID_LEGACY_CONSOLE 0x01UL
 #define SBI_EID_TIME 0x54494D45UL
+/*
+ * HSM, the Hart State Management extension.  The identifier is the three
+ * ASCII characters "HSM" packed big-endian, as the specification defines it
+ * (the same rule gives "TIME" = 0x54494D45 above).
+ */
+#define SBI_EID_HSM 0x48534DUL
 
 /* Base extension function IDs. */
 #define SBI_FID_BASE_GET_SPEC_VERSION 0UL
@@ -54,6 +60,12 @@ struct sbiret {
 #define SBI_FID_TIME_GET_TIMEBASE 1UL
 #define SBI_FID_TIME_SET_STIMECMP 7UL
 
+/* HSM extension function IDs. */
+#define SBI_FID_HSM_START 0UL
+#define SBI_FID_HSM_STOP 1UL
+#define SBI_FID_HSM_GET_STATUS 2UL
+#define SBI_FID_HSM_SET_SUSPEND_STATE 3UL
+
 /* Legacy console function IDs. */
 #define SBI_FID_LEGACY_CONSOLE_PUTCHAR 0UL
 
@@ -63,10 +75,14 @@ struct sbiret {
 /*
  * Issue one SBI `ecall` and return both result registers.
  *
+ * The specification allows a0..a5 to carry arguments, so the wrapper takes
+ * three of them; sbi_hart_start() is the call that needs more than one.
+ *
  * Traps into M-mode firmware; only valid once the firmware has handed
  * control to S-mode, i.e. never before `_start` has run.
  */
-struct sbiret sbi_ecall(unsigned long eid, unsigned long fid, unsigned long arg0);
+struct sbiret sbi_ecall(unsigned long eid, unsigned long fid,
+			unsigned long arg0, unsigned long arg1, unsigned long arg2);
 
 /* Base extension. */
 struct sbiret sbi_get_spec_version(void);
@@ -78,6 +94,26 @@ struct sbiret sbi_probe_extension(unsigned long eid);
 struct sbiret sbi_timer_time(void);
 struct sbiret sbi_timer_timebase(void);
 struct sbiret sbi_timer_set_stimecmp(unsigned long deadline);
+
+/*
+ * HSM extension.
+ *
+ * sbi_hart_start() releases a hart the firmware is holding at its S-mode entry
+ * point, passing `opaque` in a0 and the device tree address in a1 -- the same
+ * protocol the firmware uses to call the boot hart, so the same trampoline
+ * serves both.
+ *
+ * sbi_hart_get_status() returns the hart's state in `value`.  Which number
+ * means what depends on the specification version the firmware follows; see
+ * include/hsm.h, where the encoding is established by measurement rather than
+ * assumed.
+ */
+struct sbiret sbi_hart_start(unsigned long hartid, unsigned long start_addr,
+			     unsigned long opaque);
+struct sbiret sbi_hart_stop(unsigned long hartid);
+struct sbiret sbi_hart_get_status(unsigned long hartid);
+struct sbiret sbi_hart_set_suspend_state(unsigned long hartid,
+					 unsigned long suspend_type);
 
 /*
  * Write one byte to the firmware console through the legacy console

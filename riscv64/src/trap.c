@@ -14,6 +14,8 @@
 
 #include "console.h"
 #include "csr.h"
+#include "hsm.h"
+#include "plic.h"
 #include "timer.h"
 
 static void
@@ -34,11 +36,18 @@ print_trap_context(const char *what, struct trap_frame *frame, unsigned long cod
 
 unsigned long trap_expected_cause;
 
+/*
+ * Stop taking interrupts, then park.
+ *
+ * Every hart calls the same path; only the boot hart ever reaches it, because
+ * a secondary that hits a problem records an error in its slot and keeps
+ * running, leaving the reporting to the hart that owns the console.
+ */
 static void
 halt(void)
 {
 	/* Stop taking interrupts, then park. */
-	csr_write_sie(csr_read_sie() & ~CSR_SIE_STIE);
+	csr_write_sie(csr_read_sie() & ~(CSR_SIE_STIE | CSR_SIE_SEIE));
 	csr_write_sstatus(csr_read_sstatus() & ~CSR_SSTATUS_SIE);
 
 	for (;;) {
@@ -47,7 +56,7 @@ halt(void)
 }
 
 void
-trap_handler(struct trap_frame *frame)
+trap_handler(struct trap_frame *frame, unsigned long hartid)
 {
 	unsigned long cause = frame->scause;
 	unsigned long is_interrupt = cause >> 63;
@@ -55,7 +64,12 @@ trap_handler(struct trap_frame *frame)
 
 	if (is_interrupt) {
 		if (code == SUPERVISOR_TIMER_INTERRUPT) {
-			timer_on_tick();
+			timer_on_tick(hartid);
+			return;
+		}
+
+		if (code == SUPERVISOR_EXTERNAL_INTERRUPT) {
+			plic_handle_external(hartid);
 			return;
 		}
 

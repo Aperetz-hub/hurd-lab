@@ -9,3 +9,7 @@
 
 # Build output of the riscv64/ kernel (see riscv64/Makefile).
 riscv64/build/
+
+# Python bytecode from the host-side helpers in vm/.
+__pycache__/
+*.pyc

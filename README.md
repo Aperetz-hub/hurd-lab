@@ -77,16 +77,26 @@ messages.
 - `riscv64/` — **experimental**: bare-metal `rv64gc` kernel skeleton for the
   QEMU `virt` board (OpenSBI + SBI console), written in freestanding C and
   GNU assembler and built with `riscv64-linux-gnu-gcc` / `make`, like the rest
-  of this repository. **Built and booted** 18/10/2026: milestone 2 (console up,
-  SBI handshake, S-mode trap vector, five supervisor timer interrupts) runs on
-  QEMU 10.0.13 `virt`. See `riscv64/README.md` and `docs/suivi.md` for what was
-  measured and what is still unknown.
+  of this repository. **Built and booted** 18/10/2026, **milestone 4**:
+  console up, SBI handshake, S-mode trap vector, five supervisor timer
+  interrupts taken with the MMU live under Sv39 page tables, a **PLIC external
+  interrupt** from the UART claimed and completed, and every other hart of the
+  board **released through the SBI HSM extension** and running on the same page
+  table with its own timer interrupts. `make verify` requires exactly N harts up
+  at `-smp` N (6/6 runs each at `-smp` 1..4); `make selftest` checks an illegal
+  instruction, a store to the read-only data, and the PLIC interrupt on purpose.
+  See `riscv64/README.md` and `docs/suivi.md` for what was measured and what is
+  still unknown.
 - `upstream/` — patches **prepared** for the GNU/Hurd project, one directory
   per submission (`gnumach` and `hurd` targets), each with a cover note
   giving the problem, the cause, the exact test commands and results, and the
   known limits. Nothing here has been sent anywhere.
 - `docs/` — follow-up notes (`suivi.md`), plus `roadmap-riscv.md` for the
   experimental `riscv64/` track above.
+- `vm/riscv-uart-inject.py` — feeds a byte to a guest that is waiting for one on
+  its serial line, released by a trigger line the guest prints rather than by a
+  host timer. Used by the `riscv64/` PLIC self test, which needs a byte to
+  arrive in the guest's UART because the guest can only ever write to it.
 
 ## Published branches
 

@@ -107,11 +107,19 @@ _Static_assert(sizeof(struct trap_frame) == TRAP_FRAME_SIZE,
 extern char trap_entry[];
 
 /*
- * Called by the assembly entry with a pointer to the interrupted context.
- * It must not return normally for an exception it cannot handle; the
- * assembly restores the saved state and executes `sret` when it does.
+ * Called by the assembly entry with a pointer to the interrupted context and
+ * the hart id of the hart that took the trap.
+ *
+ * The hart id is passed in rather than looked up, because the lookup has to be
+ * per-hart and there is no per-CPU storage yet: any global would be shared by
+ * every hart on the board, so a hart asking "which hart am I" would be answered
+ * with whichever hart wrote last.  It arrives in the `tp` register, which the
+ * two entry trampolines in src/boot.S set to the hart id.
+ *
+ * It must not return normally for an exception it cannot handle; the assembly
+ * restores the saved state and executes `sret` when it does.
  */
-void trap_handler(struct trap_frame *frame);
+void trap_handler(struct trap_frame *frame, unsigned long hartid);
 
 /*
  * When non-zero, an exception whose cause code equals this value is treated

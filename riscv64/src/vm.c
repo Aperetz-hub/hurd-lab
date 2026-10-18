@@ -8,6 +8,7 @@
 #include "csr.h"
 #include "linker.h"
 #include "pmm.h"
+#include "plic.h"
 
 /* PTE bits, from the RISC-V privileged specification. */
 #define PTE_V (1UL << 0) /* valid */
@@ -33,14 +34,22 @@
 /* The NS16550A on the QEMU `virt` board. */
 #define UART_BASE 0x10000000UL
 
+
 static uint64_t *root_table;
 static unsigned long mapped_pages;
 static int active;
+static unsigned long shared_satp;
 
 unsigned long
 vm_root_ppn(void)
 {
 	return (unsigned long)root_table >> 12;
+}
+
+unsigned long
+vm_shared_satp(void)
+{
+	return shared_satp;
 }
 
 unsigned long
@@ -150,6 +159,22 @@ vm_init(void)
 		  PTE_PERM_RW);
 	/* The UART. It is MMIO, but it still needs a mapping. */
 	map_range(UART_BASE, UART_BASE + VM_PAGE_SIZE, PTE_PERM_RW);
+	/*
+	 * The PLIC, in the three register groups the kernel programs.  The
+	 * windows and their sizes come from include/plic.h, so the mapping
+	 * cannot fall out of step with the driver: a hart's S-mode context is
+	 * numbered 2N+1, not N, and getting the size wrong is a page fault on
+	 * the boot hart rather than an error anywhere in the driver.
+	 */
+	map_range(PLIC_PRIORITY_WINDOW,
+		  PLIC_PRIORITY_WINDOW + PLIC_PRIORITY_PAGES * VM_PAGE_SIZE,
+		  PTE_PERM_RW);
+	map_range(PLIC_ENABLE_WINDOW,
+		  PLIC_ENABLE_WINDOW + PLIC_ENABLE_PAGES * VM_PAGE_SIZE,
+		  PTE_PERM_RW);
+	map_range(PLIC_CONTEXT_WINDOW,
+		  PLIC_CONTEXT_WINDOW + PLIC_CONTEXT_PAGES * VM_PAGE_SIZE,
+		  PTE_PERM_RW);
 
 	console_puts("vm: root table ppn ");
 	console_puthex(vm_root_ppn());
@@ -161,6 +186,7 @@ vm_init(void)
 
 	/* Switch the MMU on: Sv39, with the root table as the first level. */
 	satp_value = SATP_MODE_SV39 | ((unsigned long)root_table >> 12);
+	shared_satp = satp_value;
 	csr_write_satp(satp_value);
 
 	/* Flush the TLB so that no stale translation survives the switch. */

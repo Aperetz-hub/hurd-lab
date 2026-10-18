@@ -55,6 +55,7 @@ SECTIONS
 
     .text.init : {
         KEEP(*(.text.init))
+        KEEP(*(.text.init.secondary))
     } :text
 
     /* A page boundary, so the code and the read-only data never share a

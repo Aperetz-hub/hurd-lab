@@ -1660,6 +1660,166 @@ both the milestone 2 and the milestone 3 banner exactly once per run:
 Nothing is claimed about user space, about mapping the rest of DRAM, about
 the device tree, or about starting further harts. None of it is written.
 
+## RISC-V skeleton: milestone 4, secondary harts and the PLIC (18/10/2026)
+
+Track 1 of this pass. Two deliverables: release the firmware's parked harts
+through the **SBI HSM** extension and run kernel code on all of them, and take
+the kernel's first **external interrupt** through the **PLIC**, claimed and
+completed.
+
+### FACT — what was asked of the hardware, and where the answers came from
+
+Nothing about the two mechanisms below was assumed from the specifications
+alone; the numbers in the kernel come from primary sources read on this host,
+and the parts that could be settled only by measurement were measured.
+
+- The SBI HSM extension id is `0x48534D` — the three ASCII characters "HSM"
+  packed big-endian, the same rule that gives "TIME" = `0x54494D45`. Function
+  ids: `sbi_hart_start` = 0, `sbi_hart_stop` = 1, `sbi_hart_get_status` = 2.
+- `sbi_hart_start(hartid, start_addr, opaque)` passes `opaque` in `a0` and the
+  device tree address in `a1`: the same protocol the firmware uses to call the
+  boot hart, so one trampoline shape serves both entry paths.
+- The QEMU `virt` PLIC layout is the set of constants `hw/riscv/virt.c` passes
+  to `sifive_plic_create`, and they are the same ones OpenSBI's own driver uses
+  (`lib/utils/irqchip/plic.c`): priority `+0x0 + 4*source`, pending `+0x1000`,
+  enable `+0x2000 + 0x80*context`, threshold `+0x200000 + 0x1000*context`,
+  claim/complete the same plus 4.
+- `UART0_IRQ = 10`, wired to the PLIC (`hw/riscv/virt.h`, `virt.c:1704`).
+- The OpenSBI version in QEMU 10.0.13 is **2.0**, and it advertises `hsm`.
+
+### FACT — the S-mode context number, derived from the device tree
+
+The one number that could not be guessed is the PLIC context of a hart's
+S-mode. Get it wrong and the interrupt goes to the wrong privilege mode — to
+M-mode, where the firmware eats it, and nothing anywhere reports an error.
+
+QEMU writes the PLIC node's `interrupts-extended` property as one pair of cells
+per (hart, mode), **M-mode then S-mode**. OpenSBI walks that list and derives an
+entry's context as `cell_index / 2` (`fdt_irqchip_plic.c:57`). So the answer is
+readable off the device tree, and the tree QEMU builds was dumped and walked
+exactly as OpenSBI walks it:
+
+| `-smp` | context numbers |
+|---|---|
+| 1 | hart 0: M → 0, S → **1** |
+| 2 | hart 0: M → 0, S → **1**; hart 1: M → 2, S → **3** |
+| 4 | harts 0..3: M → 0, 2, 4, 6; S → **1, 3, 5, 7** |
+
+**The S-mode context of hart N is 2N+1** on this board under TCG. That is
+`PLIC_S_CONTEXT()` in `include/plic.h`.
+
+This differs under KVM: `virt.c` writes only two cells per hart when
+`kvm_enabled()`, which makes OpenSBI compute hart N's S-mode context as N. The
+kernels here are booted under TCG (the Makefile passes no `-enable-kvm`) and
+the discovery below is what would catch a mismatch.
+
+### FACT — the status numbering, measured
+
+`sbi_hart_get_status` numbering changed between specification versions (v0.2:
+`STOPPED`=0, `STARTED`=1; v3.0: `STARTED`=0, `STOPPED`=1). Guessing would start
+nothing, or start every hart twice.
+
+Measured rather than assumed: the boot hart is by definition running, so whatever
+number it reports for itself is the firmware's `STARTED`. OpenSBI v1.6 reports
+`0`, so this firmware uses the v3.0 encoding. The kernel derives the encoding at
+runtime from that one query and prints it, and refuses to release any hart if the
+value is neither.
+
+### FACT — the four bugs that had to be found first
+
+Each of these was a real failure observed on this host, not a review finding.
+
+1. **A shared global cannot hold the hart id.** With the id cached in a static,
+   every hart wrote the same word, so each read back whichever hart wrote last.
+   Symptom at `-smp 3`: hart 1 reported **0 ticks** while hart 2 reported
+   **202**, which is the boot hart's own count — each was counting into the wrong
+   slot. Fixed by publishing the id in `tp`, which the trap entry already saves
+   and restores, and passing it to the handler as a second argument.
+2. **"Running" proved almost nothing.** A secondary that had written `satp` and
+   set a flag had done two instructions. The claim that matters is a hart that has
+   *taken a timer interrupt with the MMU live*. `timer_on_tick` now records the
+   `satp` mode field per tick, and the boot hart waits for each secondary to reach
+   one before it reports.
+3. **The PLIC context window was two pages.** A context is one 4 KiB page and a
+   hart's context is 2N+1, so two pages cover harts 0 and 1 only. It booted at
+   `-smp` 1, 2, 3 every time and failed at `-smp` 4 — but only when the firmware
+   happened to pick hart 2 or 3 as the boot hart, with a store page fault (cause
+   15) at `0x0c205000` = context 5. The boot hart is chosen by a race, so the
+   failure looked intermittent and was deterministic. The windows are now defined
+   once in `include/plic.h` and mapped from those definitions.
+4. **Reading the claim words does not discover the context.** The obvious check —
+   enable the source in one candidate at a time, read that context's claim word
+   — answers with the source whenever *that context's enable bits* allow it,
+   whichever context the firmware routes the interrupt to. It therefore measured
+   its own writes, and at `-smp` 1 reported context 0 while the interrupt-driven
+   path had just delivered the same source correctly through context 1. The
+   working check is functional: enable one candidate, and see whether the
+   supervisor external interrupt arrives at all.
+
+Two further defects in that functional check were found the same way: the
+interrupt count has to be read **before** the byte arrives (a trap can land inside
+the loop watching for it), and there must be **no** "has the byte landed" wait at
+all — a correct context raises the trap so promptly that the handler has already
+drained the receive register before the pending bit is polled, so that wait timed
+out on precisely the context that worked.
+
+### FACT — results
+
+`make verify` now requires **exactly N harts reporting running at `-smp` N**, not
+just the boot banner once, because the second harts are the deliverable:
+
+```
+  -smp 1 : OK on 6/6 runs, 1 harts up each time
+  -smp 2 : OK on 6/6 runs, 2 harts up each time
+  -smp 3 : OK on 6/6 runs, 3 harts up each time
+  -smp 4 : OK on 6/6 runs, 4 harts up each time
+```
+
+Boot log at `-smp 4` (OpenSBI's own banner omitted):
+
+```
+
+```
+
+`make selftest` adds a `plic` variant. The byte that makes the UART assert its
+interrupt cannot come from the guest, which only ever writes to the serial line,
+so `vm/riscv-uart-inject.py` injects one over a unix serial socket, released by a
+trigger line the kernel prints rather than by a host timer:
+
+```
+selftest plic: PASS
+    plic: context from the hart id 1, PLIC base 0x0xc000000, source 10
+
+    selftest: waiting for an injected byte on the serial line
+
+    PLIC-INJECT-1<-- injected Z
+    selftest: external interrupt 1, source 10, spurious claims 0
+
+    selftest: trial context 1, asking for a byte
+
+    PLIC-TRIAL<-- injected Y
+    selftest: the board routed source 10 to context 1, the hart id formula gives 1
+
+    selftest: scause was 0x8000000000000009, claimed and completed cleanly
+
+    selftest: PASS
+```
+
+`scause` for that trap is `0x8000000000000009`, i.e. interrupt bit set and cause 9
+= supervisor external interrupt, and the source claimed is 10.
+
+### SPECULATION
+
+Nothing is claimed about a scheduler: every released hart ends up parked in a
+`wfi` loop, so what is demonstrated is that a second hart runs kernel code on a
+shared page table and takes its own interrupts, not that anything useful runs on
+it. Nothing is claimed about external interrupts on a secondary — `plic_init`
+programs the boot hart's context only, deliberately, because the UART is one
+device whose interrupt belongs to one context. Nothing is claimed about `tp`
+being the right long-term home for the hart id: it works because it is
+preserved across calls and by the trap frame, and it is not a substitute for
+per-CPU storage.
+
 ## Disk safety (permanent rules)
 
 - **Never** boot `debian-hurd-amd64-*.img` in write mode.

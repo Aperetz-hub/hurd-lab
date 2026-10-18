@@ -76,8 +76,20 @@ trap_entry:
 	csrr	t0, stval
 	sd	t0, TRAP_OFF_STVAL(sp)
 
-	/* Call the C handler with the frame pointer. */
+	/*
+	 * Call the C handler with the frame pointer and the hart id.
+	 *
+	 * The hart id comes from x4 (tp), which _start and secondary_start both
+	 * set to it.  It is read here rather than taken from a shared global,
+	 * because a global cannot hold a per-hart value: every hart writes the
+	 * same word, so a hart asking "which hart am I" would be answered with
+	 * whichever hart wrote last.  See the comment in boot.S.
+	 *
+	 * x4 is restored from the frame further down, so the C code may treat it
+	 * as the hart id for the duration of the call.
+	 */
 	mv	a0, sp
+	mv	a1, x4
 	call	trap_handler
 
 	/*

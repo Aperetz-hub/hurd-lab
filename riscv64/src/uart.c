@@ -31,6 +31,12 @@
 #define REG_LCR 3
 #define REG_LSR 5
 
+/* IER bit 0: interrupt when the receive holding register has data. */
+#define IER_RDI 0x01u
+
+/* LSR bit 0: data ready, i.e. the receive register holds a byte. */
+#define LSR_DR 0x01u
+
 /* LSR bit 5: transmit holding register empty. */
 #define LSR_THRE (1u << 5)
 
@@ -75,4 +81,36 @@ uart_putc(char byte)
 		/* Poll until the holding register drains. */
 	}
 	*uart_reg(REG_RBR) = (uint8_t)byte;
+}
+
+void
+uart_enable_rx_irq(void)
+{
+	/* Read-modify-write, so the transmitter interrupt enable survives. */
+	*uart_reg(REG_IER) = (uint8_t)(*uart_reg(REG_IER) | IER_RDI);
+}
+
+void
+uart_disable_rx_irq(void)
+{
+	*uart_reg(REG_IER) = (uint8_t)(*uart_reg(REG_IER) & ~IER_RDI);
+
+	/*
+	 * Clear anything already waiting, or the device keeps asserting its
+	 * interrupt line for a byte nobody is going to read.
+	 */
+	if (*uart_reg(REG_LSR) & LSR_DR)
+		(void)*uart_reg(REG_RBR);
+}
+
+int
+uart_rx_ready(void)
+{
+	return (*uart_reg(REG_LSR) & LSR_DR) != 0;
+}
+
+unsigned char
+uart_read_rbr(void)
+{
+	return (unsigned char)*uart_reg(REG_RBR);
 }

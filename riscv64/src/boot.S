@@ -53,6 +53,24 @@ _start:
 
 	la	sp, __stack_top
 
+	/*
+	 * Publish the hart id in `tp` before anything else.
+	 *
+	 * `tp` (x4) is the only register that can carry a per-hart value here.
+	 * There is no per-CPU storage yet, and a plain global would be shared by
+	 * every hart on the board: a static that each hart writes its own id into
+	 * is read back by whichever hart wrote last, not by the one asking.
+	 * That is not a theoretical concern -- it is exactly what happened the
+	 * first time this was written as a static, and the symptom was one hart
+	 * reporting zero ticks while another reported the boot hart's count.
+	 *
+	 * `tp` is preserved across function calls by the calling convention and
+	 * is already saved and restored by the trap frame, so the interrupt
+	 * handler can read it as the per-hart value it is.  See the second
+	 * argument to trap_handler in src/trap.S.
+	 */
+	mv	tp, a0
+
 	/* Zero the .bss the linker script tells us about. */
 	la	t0, __bss_start
 	la	t1, __bss_end
@@ -76,3 +94,67 @@ _start:
 4:	wfi
 	j	4b
 	.size _start, . - _start
+
+/*
+ * Entry trampoline for a hart the kernel released itself, through the SBI HSM
+ * extension's `sbi_hart_start`.
+ *
+ * The firmware jumps here in S-mode, with the hart id in `a0` (the opaque value
+ * that was passed to sbi_hart_start) and the device tree address in `a1` -- the
+ * same protocol that brought the boot hart to `_start`.  Unlike the boot hart,
+ * this one has no stack of its own yet, so getting a stack is the first job.
+ *
+ * The stack comes from the table in src/hsm.c, indexed by hart id.  That table
+ * has to be addressed here, in assembly, because C cannot run before `sp` is
+ * set; include/hsm_offsets.h names it and the stride, and include/hsm.h checks
+ * at compile time that those numbers describe the C array.
+ *
+ * The compiler is not involved in the stack switch, so no gp-relative access
+ * and no C call happens before `sp` and `gp` are both right.  norelax is
+ * mandatory on the gp load for the same reason as in `_start`.
+ */
+
+#include "hsm_offsets.h"
+
+	.section .text.init.secondary, "ax", @progbits
+	.globl secondary_start
+	.type secondary_start, @function
+secondary_start:
+	/*
+	 * a0 is the hart id; t0 holds it while t1 walks the stack table.
+	 *
+	 * The hart id is published in tp first, for the reason given in
+	 * _start: tp is the only per-hart register available here, and the
+	 * interrupt handler reads the hart id from it.
+	 */
+	mv	tp, a0
+	mv	t0, a0
+
+	/* sp = hsm_stack_top[hartid] */
+	la	t1, HSM_ASM_STACK_TABLE
+	slli	t0, t0, HSM_ASM_STACK_SHIFT
+	add	t1, t1, t0
+	ld	sp, HSM_ASM_STACK_ENTRY(t1)
+
+	/*
+	 * A zero here means the boot hart never published a stack for this hart,
+	 * or released it without one.  There is nothing safe to do on a stack
+	 * pointer of zero, so park instead of faulting on the way down.
+	 */
+	beqz	sp, 6f
+
+.option push
+.option norelax
+	la	gp, __global_pointer$
+.option pop
+
+	/* hsm_secondary_main() diverges; a0 still holds the hart id. */
+	call	hsm_secondary_main
+
+	/*
+	 * Unreachable, exactly as after kmain above.  Park rather than run off
+	 * the end of the image.
+	 */
+6:	wfi
+	j	6b
+	.size secondary_start, . - secondary_start

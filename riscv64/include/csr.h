@@ -18,9 +18,13 @@
 #define CSR_SSTATUS_SIE (1UL << 1)
 
 #define CSR_SIE_STIE (1UL << 5)
+/* bit 9 of `sie` gates the supervisor external interrupt, which is how a PLIC
+ * source reaches S-mode. */
+#define CSR_SIE_SEIE (1UL << 9)
 
 /* Supervisor trap causes. */
 #define SUPERVISOR_TIMER_INTERRUPT 5
+#define SUPERVISOR_EXTERNAL_INTERRUPT 9
 
 static inline unsigned long
 csr_read_sstatus(void)

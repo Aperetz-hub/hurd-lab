@@ -27,23 +27,57 @@
 
 #include <stdint.h>
 
+#include "hsm.h"
+
 /* Ticks of the 10 MHz timebase between two interrupts: 100000 = 10 ms. */
 #define TIMER_INTERVAL_TICKS 100000UL
 
 /* How many interrupts the milestone waits for. */
 #define TIMER_TICKS_TARGET 5
 
+/* How much ceremony a hart's timer needs. */
+#define TIMER_ARM_BOOT 0	/* the boot hart: ask the SBI TIME extension
+				 * first, so the banner records what the firmware
+				 * offers, then report and print every tick */
+#define TIMER_ARM_SECONDARY 1	/* a hart the kernel released itself: write
+				 * the Sstc CSR directly and say nothing, so two
+				 * harts never interleave on the console */
+
 /*
- * Arm the timer and enable the supervisor timer interrupt. Returns 0 on
- * success, or a negative value if the firmware has not delegated the
- * interrupt to S-mode.
+ * Arm this hart's timer and enable the supervisor timer interrupt.
+ *
+ * `hartid` selects the per-hart slot: every hart runs its own copy of this
+ * state, and a secondary hart started through the SBI HSM extension arms its
+ * own tick exactly the way the boot hart does.
+ *
+ * Returns 0 on success, or a negative value if the firmware has not delegated
+ * the interrupt to S-mode.
  */
-int timer_init(unsigned long interval_ticks);
+int timer_arm(unsigned long hartid, unsigned long interval_ticks, int how);
+
+/* Report how the timer was armed, for the console. The boot hart calls this. */
+void timer_report(unsigned long hartid);
+
+/*
+ * Turn the per-tick console report on or off for this hart.
+ *
+ * The report is what makes a boot log readable, and what makes a test that waits
+ * through hundreds of idle ticks unreadable.  The PLIC self test turns it off for
+ * the duration of its searches and back on afterwards.
+ */
+void timer_set_verbose(unsigned long hartid, int verbose);
 
 /* Called from the trap handler on every supervisor timer interrupt. */
-void timer_on_tick(void);
+void timer_on_tick(unsigned long hartid);
 
-/* Number of timer interrupts seen so far. */
-unsigned long timer_tick_count(void);
+/* Number of timer interrupts this hart has taken. */
+unsigned long timer_tick_count(unsigned long hartid);
+
+/*
+ * How many of those arrived with the MMU live.  A hart that armed its tick and
+ * enabled its interrupts but never actually switched its `satp` on would
+ * otherwise report the same tick count as one that did.
+ */
+unsigned long timer_tick_count_mmu(unsigned long hartid);
 
 #endif /* TIMER_H */
