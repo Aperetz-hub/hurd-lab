@@ -28,14 +28,19 @@ Experimental fork of GNU/Hurd (64-bit) with two goals:
     freezes the machine (IRQ 11 unacknowledged, network + console dead,
     reboot required) → `scripts/net-switch-vioif.sh` is **locked**.
   - `glibc ≥ 2.43` required by the rump binaries.
-- **SMP: not functional.** `-smp 1` = full system. `-smp 2` = boot hangs in
-  the AHCI attach of the **`rumpdisk`** translator
-  (`ahcisata0: 64-bit DMA`), reproducible on a fresh overlay (GDB autopsy:
-  CPU0 = 100 Hz clock interrupt, CPU1 `machine_idle`, no runnable user task
-  → `rumpdisk` blocked inside the kernel; see `docs/suivi.md`
-  § *Autopsy of the `-smp 2` hang*). The `maxcpus=N`/`nosmp` boot option
-  (commit `a4237652`, branch `fork/x86_64`) remains **useful to force
-  single-CPU mode on a multi-core VM**, but **does not fix** the SMP races.
+- **SMP: fixed, still experimental.** `-smp 2` used to hang in the AHCI
+  attach of the **`rumpdisk`** translator (`ahcisata0: 64-bit DMA`). Root
+  cause: `start_other_cpus()` disabled the BSP's own local APIC while the APs
+  were coming up, so the master CPU stopped receiving its 100 Hz tick; since
+  `clock_interrupt()` advances time, timeouts and preemption only on the
+  master CPU, the whole system clock froze and `rumpdisk` waited forever.
+  Commit `4207ebda` (`fork/x86_64`) removes that window. Verified 18/10/2026:
+  `-smp 2` boots **3/3** with `nproc = 2`, `-smp 1` boots 2/2, and
+  `maxcpus=1` on the unfixed kernel still boots 2/2. Full autopsy and the
+  measurements behind it: `docs/suivi.md` § *Autopsy of the `-smp 2` hang*
+  and § *5th/6th pass*. **Not yet shown**: that the AP does useful work — no
+  MP workload has been run, so "fixed" means "boots and stays usable with two
+  CPUs", not "SMP is correct".
 
 > **History.** The dev VM disk was corrupted on 17/10
 > (re-extracting the base image while an overlay was in service) then

@@ -874,6 +874,73 @@ SMP=2 WAIT=85 vm/trials-smp.sh /home/ben/hurd-fork/vm/ovl-p5-fix.qcow2 4
   prevent IOAPIC interrupts from interfering with SMP startup"), so it is worth
   reporting upstream: `splhigh()` already covers the stated intent on the BSP.
 
+### 6th pass: re-verification of the `-smp 2` fix (18/10/2026)
+
+**No kernel change was made in this pass.** Step 1.1 of the current session
+required reproducing the hang before changing anything, and the reproduction
+showed the documented state of this document was out of date: the `-smp 2` hang
+is already fixed by the commit the 5th pass produced. Per the instruction to
+stop and document a divergence, no further hypothesis was pursued.
+
+**FACT.** Commands run, and their output:
+
+```
+# unfixed reference kernel, -smp 2
+$ SMP=2 WAIT=85 vm/trials-smp.sh /home/ben/hurd-fork/vm/ovl-fork-master.qcow2 3
+round smp2 #1 => WEDGE
+round smp2 #2 => WEDGE
+round smp2 #3 => WEDGE
+
+# kernel of commit 4207ebda ("smp: do not disable the BSP local APIC while
+# starting the APs"), -smp 2
+$ SMP=2 WAIT=85 vm/trials-smp.sh /home/ben/hurd-fork/vm/ovl-p5-fix.qcow2 3
+round smp2 #1 => BOOT   ssh: 2 98439c22ce31bbd58397eb333b515c23 /boot/gnumach-1.8-amd64-up.gz
+round smp2 #2 => BOOT   ssh: 2 98439c22ce31bbd58397eb333b515c23 /boot/gnumach-1.8-amd64-up.gz
+round smp2 #3 => BOOT   ssh: 2 98439c22ce31bbd58397eb333b515c23 /boot/gnumach-1.8-amd64-up.gz
+
+# regression, same patched kernel at -smp 1
+$ SMP=1 WAIT=85 vm/trials-smp.sh /home/ben/hurd-fork/vm/ovl-p5-fix.qcow2 2
+round smp2 #1 => BOOT   ssh: 1 98439c22ce31bbd58397eb333b515c23 /boot/gnumach-1.8-amd64-up.gz
+round smp2 #2 => BOOT   ssh: 1 98439c22ce31bbd58397eb333b515c23 /boot/gnumach-1.8-amd64-up.gz
+
+# regression, unfixed kernel with maxcpus=1 injected (AP not started)
+$ SMP=2 WAIT=85 vm/trials-smp.sh /home/ben/hurd-fork/vm/ovl-fork-master.qcow2 2 \
+      maxcpus /tmp/gnumach-new
+round maxcpus #1 => BOOT   ssh: 1 c81dfe4716a9216d6bf0c2047998cdf7 /boot/gnumach-1.8-amd64-up.gz
+round maxcpus #2 => BOOT   ssh: 1 c81dfe4716a9216d6bf0c2047998cdf7 /boot/gnumach-1.8-amd64-up.gz
+```
+
+Kernel identities, read over SSH in the guest at boot time:
+
+| overlay | kernel md5 | `nproc` at `-smp 2` | `nproc` at `-smp 1` |
+|---|---|---|---|
+| `ovl-fork-master.qcow2` | `c81dfe4716a9216d6bf0c2047998cdf7` (unfixed) | hangs 3/3 | boots, 1 CPU (unmeasured this pass) |
+| `ovl-p5-fix.qcow2` | `98439c22ce31bbd58397eb333b515c23` (= commit `4207ebda`) | **boots 3/3, 2 CPUs** | boots 2/2, 1 CPU |
+
+**Divergence from this document's earlier text.** The README `Status` section
+still read "**SMP: not functional.** `-smp 2` = boot hangs", and the `Autopsy`
+sections describe the hang as open. Both predate commit `4207ebda`. The README
+has been corrected (see below); the autopsy sections are left as written
+because they are the record of how the fault was found.
+
+**Hypothesis status.**
+
+| hypothesis | status | evidence this pass |
+|---|---|---|
+| BSP `lapic_disable()` around AP start-up starves the master CPU of its 100 Hz tick, which freezes time/timeouts/preemption and hangs `rumpdisk` | **confirmed** | removing it (commit `4207ebda`) turns 3/3 hangs into 3/3 boots with two live CPUs; reverting to the reference kernel restores 3/3 hangs |
+| `-smp 1` is broken by the change | **refuted** | patched kernel boots `-smp 1` 2/2 |
+| `maxcpus=1` / `nosmp` is broken by the change | **refuted** (not touched by it) | unfixed kernel still boots 2/2 with `maxcpus=1`; the commit does not touch that code path |
+| the hang is caused by rumpnet/virtio rather than by AP start-up | **undecided**, untested | not addressed; the patched kernel boots to a working system with `vioif` up, which is consistent with either reading |
+
+**Not verified in this pass.** The AP was observed to exist and run
+(`nproc = 2`), but nothing here checks that it does useful work: no MP workload
+was run, and no second CPU scheduling latency was measured. "Fix" here means
+"the system boots with two CPUs and stays usable across a boot + SSH session",
+not "SMP is correct".
+
+**SPECULATION.** None offered for the remaining gap; closing it needs the
+undecided test above, not an argument.
+
 ## Virtio storage (`virtio-blk` / `ld_virtio`) (17/10/2026) — recipe ready, not executable here
 
 Goal: extend the virtio rump recipe (already OK for
