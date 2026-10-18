@@ -1,185 +1,273 @@
-# hurd-lab — GNU/Hurd x86_64 fork: SMP + rumpnet virtio
+# hurd-lab
 
-Experimental fork of GNU/Hurd (64-bit) with two goals:
+Kernel, driver and architecture bring-up work for **GNU/Hurd**: `x86_64` SMP
+bring-up in GNU Mach and a VirtIO-network stack (`rumpnet` / `vioif`) built on
+the NetBSD rump kernel, plus an experimental freestanding `riscv64` (`rv64gc`)
+S-mode microkernel prototype written in pure C11 and GNU assembler.
 
-1. **gnumach**: stop hanging the boot when APs fail to start
-   (clean degradation to single-CPU instead of `while (1)`).
-2. **rumpnet**: add **virtio-net** (`vioif`) network support — drivers
-   `rumpdev_virtio_if_vioif` / `rumpdev_pci_virtio`, absent from the Debian
-   packages — then make it the default network interface.
+Everything claimed below was measured on a QEMU host; the numbers are the ones
+in `docs/suivi.md`, which records each measurement, what it does and does not
+prove, and where the boundary between observation and inference sits.
 
-## Status (17/10/2026)
+---
 
-> **Pure console / headless mode — no X11.** This project **never** runs
-> with Xorg, `xdm` or XFCE: everything happens in a text console + SSH. Do
-> not install `xfce4`/`xdm`/Xorg on the VM.
+## Key technical results
 
-- **virtio-net (`vioif`): functional at boot.**
-  - `curlwp`/`%gs` crash fixed (interposition of rump's `<machine/cpu.h>` +
-    `-D_RUMPKERNEL`, see `patches/build/`).
-  - The VM boots on `/dev/vioif0` (MAC `52:54:00:12:34:58`): `ping` gateway
-    + `8.8.8.8`, DNS, HTTPS (`wget`), SSH (host hostfwd `2223`) — OK.
-  - Integrated **at boot**: `scripts/start-rumpnet.sh` (rumpnet translator +
-    devnode `/dev/vioif0`, called as `pre-up`) + `scripts/interfaces.vioif`;
-    `eth0`/netdde kept as fallback (not auto).
-  - **`-m 4G` is mandatory**: with 2 GB the driver does not attach
-    (`virtio0: virtqueue 0 for rx0 allocation failed, error code 1`).
-  - **Validated together with SMP**: `-smp 2` with `vioif0` up passes traffic
-    and holds its clock under a 60 s concurrent MP workload (18/10/2026).
-  - **Do not hot-switch**: `ifconfig /dev/eth0 down` with rumpnet active
-    freezes the machine (IRQ 11 unacknowledged, network + console dead,
-    reboot required) → `scripts/net-switch-vioif.sh` is **locked**.
-  - `glibc ≥ 2.43` required by the rump binaries.
-- **SMP: fixed, and now exercised under load.** `-smp 2` used to hang in the
-  AHCI attach of the **`rumpdisk`** translator (`ahcisata0: 64-bit DMA`). Root
-  cause: `start_other_cpus()` disabled the BSP's own local APIC while the APs
-  were coming up, so the master CPU stopped receiving its 100 Hz tick; since
-  `clock_interrupt()` advances time, timeouts and preemption only on the
-  master CPU, the whole system clock froze and `rumpdisk` waited forever.
-  Commit `4207ebda` (`fork/x86_64`) removes that window. Verified 18/10/2026:
-  `-smp 2` boots **3/3** with `nproc = 2`, `-smp 1` boots 2/2, and
-  `maxcpus=1` on the unfixed kernel still boots 2/2.
-  **Under load** (18/10/2026, `vm/smp-stress-run.sh`): with `-smp 2` and
-  `vioif0` up, a 60 s window running two CPU-bound workers (one pinned to the
-  slave processor set through `/sbin/smp`), continuous rumpdisk I/O and
-  continuous ICMP over `vioif0` completed with **0 % packet loss**, both
-  workers doing ~11 G iterations, and the **100 Hz clock never froze**:
-  6115 ticks in 61.140 s of host time, i.e. **100.017 ticks/s**, and the
-  kernel's own `uptime` tracked the host clock to 0.017 %. Full measurements
-  in `docs/suivi.md` § *SMP + vioif0 MP stress test*.
-- **The AP takes its own periodic timer interrupts — measured** (18/10/2026,
-  `vm/ap-timer-probe.py`). Both questions the stress pass left open are now
-  answered. The application processor *does* run its own periodic LAPIC timer,
-  independent of the master's clock: `machine_slot[1].cpu_ticks[]` advances at
-  **85.8 Hz** with the default `kernel-irqchip=on` and **163.5 Hz** with
-  `kernel-irqchip=split`, against a master at 100.0 and 200.0 Hz respectively.
-  That counter is incremented only inside `clock_interrupt()`, outside the
-  master-only guard, so it can only move if that CPU took an interrupt — and
-  under load CPU 1 accounted **136.9 Hz of its own user-mode time**, which is
-  how the kernel charges that CPU at all.
-  **The two QEMU irqchip configurations are not interchangeable**, and the
-  difference is larger than it looks: with `kernel-irqchip=split` the master
-  clock runs at **200 Hz against a kernel built for 100**, so the guest's time
-  of day advances at **2x real time** and every guest-measured duration is
-  inflated by half again. With the default the clock is accurate to 0.01 %, so
-  the stress pass's 100.017 ticks/s is *confirmed*, not overturned. See
-  `docs/suivi.md` § *x86_64: the AP's LAPIC timer, and heavy vioif0
-  throughput*.
-- **`vioif0` survives sustained heavy TCP — measured** (18/10/2026,
-  `vm/vioif-throughput.sh`). 100 MiB transfers, guest → host, throughput
-  counted by the host sink that receives the bytes:
+### 1. GNU Mach `x86_64` SMP bring-up — the `-smp 2` boot freeze
 
-  | QEMU irqchip | idle | under the full MP load |
-  |---|---|---|
-  | `kernel-irqchip=on` | **3.059 MiB/s** | **3.058 MiB/s** (−0.04 %) |
-  | `kernel-irqchip=split` | **5.538 MiB/s** | **4.395 MiB/s** (−20.6 %) |
+**Root cause.** `start_other_cpus()` in `i386/i386/mp_desc.c` wrapped the
+application-processor bring-up in `lapic_disable()` / `lapic_enable()`. On the
+boot processor that is not merely redundant, it is destructive. `splhigh()` is
+already in effect for the whole window, so masking costs nothing — but clearing
+`LAPIC_ENABLE` makes the BSP unable to accept *any* IOAPIC interrupt, so the
+100 Hz PIT edges that arrive while the APs come up are consumed without ever
+being delivered.
 
-  All four transfers delivered exactly 104857600 bytes with **zero stalls**
-  (the per-second progress marks are strictly monotonic throughout) and **0 %
-  ICMP loss**. `scp` of the same volume over the same device reaches 4.396
-  MiB/s, within 0.03 % of raw TCP, so the cipher is not the limit — the earlier
-  note that 5 pkt/s does not saturate the virtio queues is true of ICMP and
-  false of TCP, which sustains ~1400 packets/s here. **TCP retransmit counts
-  are still not measured**: the guest has no `/proc/net` and slirp terminates
-  the connection inside QEMU.
-  **Still not shown**: that the Hurd userland is SMP-*correct*. Two CPUs run
-  concurrent work, both take clock interrupts, and the clock holds, but that
-  the timeslice accounting, run queues and AST path are safe with two
-  processors in user space at once is a separate question and remains open.
+Because `clock_interrupt()` advances `uptime`, the timeout wheel and
+`last_hpc_read` **only on the master CPU**, the system clock then stops
+completely: no time, no timeout, no preemption. `rumpdisk` spins forever in its
+AHCI attach. The measured signature is a guest that is otherwise alive with
+`uptime` stuck at **0.120 s** and `elapsed_ticks` at **12**.
 
-> **History.** The dev VM disk was corrupted on 17/10
-> (re-extracting the base image while an overlay was in service) then
-> rebuilt as an autonomous copy — see `docs/suivi.md` § *INCIDENT*.
+**Fix.** One hunk in `mp_desc.c`, `smp: do not disable the BSP local APIC while
+starting the APs` — commit **`4207ebda`** on `fork/x86_64`.
 
-Details, test methods and diagnostics: `docs/suivi.md` and the commit
-messages.
+**Verification.** On QEMU q35 with KVM, `-m 4G`, the `noide` boot argument, and
+a disposable overlay:
 
-## Contents
+| kernel | `-smp 2` | `-smp 1` |
+|---|---|---|
+| `origin/master` `79e98e8b`, unpatched | **0/3 BOOT** (3 × WEDGE) | 2/2 BOOT, `nproc=1` |
+| `origin/master` + the extracted 3-patch series | **3/3 BOOT**, `nproc=2` | 2/2 BOOT, `nproc=1` |
+| fork branch, fix applied | **12/12 BOOT**, `nproc=2` | 3/3 BOOT |
 
-- `src/` — *not versioned here*: full clones of
-  [`hurd/gnumach`](https://git.savannah.gnu.org/cgit/hurd/gnumach.git),
-  [`hurd/hurd`](https://git.savannah.gnu.org/cgit/hurd/hurd.git) and
-  [`hurd/mig`](https://git.savannah.gnu.org/cgit/hurd/mig.git).
-  Work happens on `fork/x86_64` branches (pushed as-is to GitHub,
-  see below).
-- `vm/` — QEMU scripts (`-M q35`; e1000 + pcnet + virtio-net; SSH
-  localhost:2222 e1000 / :2223 virtio), the SMP trial harness, the kernel
-  probes (`kprobe.py`, `clock-probe.py`, `ap-timer-probe.py`) and the SMP +
-  vioif0 MP stress and throughput harnesses
-  (`smp-stress-run.sh`).
-- `patches/` — consolidated patches + rump build tooling (virtio) and the
-  SMP test kernel (`gnumach-smp-test`, ELF with `debug_info`).
-- `scripts/` — vioif boot integration: `start-rumpnet.sh`,
-  `interfaces.vioif`, `net-switch-vioif.sh`.
-- `vm/clock-probe.py`, `vm/ap-timer-probe.py` — read the kernel's own
-  timekeeping and per-CPU clock-interrupt counters straight out of guest memory
-  through the QEMU monitor, against the host wall clock. These measure the AP's
-  timer and the guest clock rate; see `docs/suivi.md`.
-- `vm/memread-check.py` — self-checks for those probes. The QEMU monitor's
-  `xp/Nx` reads **bytes**, not words, and the kernel is linked at
-  `0xffffffff80000000` but loaded at 1 MiB; both mistakes return plausible
-  numbers rather than errors, so the checks are there to catch them.
-- `vm/vga-console.py` — decodes the guest's VGA text console out of guest
-  memory, because the Hurd console is not the serial line.
-- `vm/vioif-throughput.sh`, `vm/vioif-send.py` — the sustained-throughput
-  experiment over `vioif0`.
-- `riscv64/` — **experimental**: bare-metal `rv64gc` kernel skeleton for the
-  QEMU `virt` board (OpenSBI + SBI console), written in freestanding C and
-  GNU assembler and built with `riscv64-linux-gnu-gcc` / `make`, like the rest
-  of this repository. **Built and booted** 18/10/2026, **milestone 4**:
-  console up, SBI handshake, S-mode trap vector, five supervisor timer
-  interrupts taken with the MMU live under Sv39 page tables, a **PLIC external
-  interrupt** from the UART claimed and completed, and every other hart of the
-  board **released through the SBI HSM extension** and running on the same page
-  table with its own timer interrupts. `make verify` requires exactly N harts up
-  at `-smp` N (6/6 runs each at `-smp` 1..4); `make selftest` checks an illegal
-  instruction, a store to the read-only data, and the PLIC interrupt on purpose.
-  See `riscv64/README.md` and `docs/suivi.md` for what was measured and what is
-  still unknown.
-- `upstream/` — patches **prepared** for the GNU/Hurd project, one directory
-  per submission (`gnumach` and `hurd` targets), each with a cover note
-  giving the problem, the cause, the exact test commands and results, and the
-  known limits. Nothing here has been sent anywhere.
-- `docs/` — follow-up notes (`suivi.md`), plus `roadmap-riscv.md` for the
-  experimental `riscv64/` track above.
-- `vm/riscv-uart-inject.py` — feeds a byte to a guest that is waiting for one on
-  its serial line, released by a trigger line the guest prints rather than by a
-  host timer. Used by the `riscv64/` PLIC self test, which needs a byte to
-  arrive in the guest's UART because the guest can only ever write to it.
+The 12/12 figure is the fork-branch run recorded in
+`upstream/gnumach-smp-ap-startup/COVER-NOTE.md`; the 0/3 and 3/3 figures are the
+clean-`master` before/after pair in `docs/suivi.md`.
 
-## Published branches
+Every BOOT round reads `nproc` and `md5sum /boot/gnumach-1.8-amd64-up.gz` over
+SSH *inside* the guest, and the checksum matched the uploaded kernel each time,
+so the kernel that booted is the one that was built from the patched tree.
 
-- `main` — this project (docs, scripts, patches).
-- `fork/gnumach-x86_64` — gnumach history + SMP commits.
-- `fork/hurd-x86_64` — hurd history + commits (bpf_hdr, login utmp, pcn…).
+**Master clock.** Over a 60 s window: **6115 ticks in 61.140 s of host time =
+100.017 ticks/s** against a nominal 100, with the kernel's own `uptime`
+tracking the host wall clock to 0.017 %.
 
-## Quick start (Debian host)
+**The AP runs its own periodic timer.** Measured, not assumed: the per-CPU
+`machine_slot[cpu].cpu_ticks[]` counters, which `clock_interrupt()` increments
+*outside* the master-only guard and which nothing else writes.
 
+| QEMU irqchip | master (CPU 0) | application processor (CPU 1) |
+|---|---|---|
+| `kernel-irqchip=on` (default) | 99.98 Hz | **85.83 Hz** |
+| `kernel-irqchip=split` | 200.01 Hz | **163.50 Hz** |
+
+The AP's total rate is unchanged between idle and saturated (163.50 vs
+163.48 Hz), and under full load it charged itself **136.9 Hz of user-mode
+time**, which is how the kernel accounts that CPU at all.
+
+**Concurrent MP stress.** A 60 s window at `-smp 2` with `vioif0` up, running a
+CPU-bound worker on each processor set (one pinned through `/sbin/smp`),
+continuous `rumpdisk` write+fsync+read and continuous ICMP: **0 % packet loss**,
+~11 G iterations on both workers, clock never frozen.
+
+**Known limit, stated rather than glossed:** that the Hurd *userland* is
+SMP-correct is **not** shown. Two CPUs run concurrent work, both take clock
+interrupts and the clock holds, but the safety of the timeslice accounting, run
+queues and AST path with two processors in user space at once remains open.
+
+### 2. VirtIO network — `vioif0` on NetBSD rump
+
+`librumpdev_pci_virtio` and `librumpdev_pci_if_vioif` are absent from the Debian
+Hurd packages; this repository builds and installs them.
+
+- **`curlwp` / `%gs` crash fixed.** rump's `<machine/cpu.h>` was resolving
+  `curlwp` to the `%gs` access `x86_curlwp()` instead of the Hurd hypercall
+  `rump_curlwp_fast()`, crashing on `mov %gs:0xac0,%rax`. Fixed by interposing
+  the architecture header and defining `-D_RUMPKERNEL` so `curlwp` stays
+  `x86_curlwp()`, plus putting the rump includes first — see `patches/build/`.
+  This is a defect of the build *recipe*, not an upstream patch, and the
+  repository says so rather than dressing it up as one.
+- **`bpf_hdr` 64-bit layout corrected.** rumpnet's local copy of `struct
+  bpf_hdr` had `usec` before `sec`, so on `x86_64` every reader of the timestamp
+  got microseconds where seconds belong. The offsets the translator relies on
+  did not move, which is why it went unnoticed.
+- **Integrated at boot** via `scripts/start-rumpnet.sh` (translator + devnode,
+  called as `pre-up`) and `scripts/interfaces.vioif`; `eth0`/netdde kept as a
+  non-`auto` fallback.
+- **`-m 4G` is mandatory**: with 2 GB the driver does not attach
+  (`virtio0: virtqueue 0 for rx0 allocation failed, error code 1`).
+
+**Sustained heavy TCP, 100 MiB per transfer**, throughput counted by the host
+sink that receives the bytes rather than by the guest's clock:
+
+| QEMU irqchip | idle | under the full MP load |
+|---|---|---|
+| `kernel-irqchip=on` | **3.059 MiB/s** | **3.058 MiB/s** (−0.04 %) |
+| `kernel-irqchip=split` | **5.538 MiB/s** | **4.395 MiB/s** (−20.6 %) |
+
+All four transfers delivered exactly 104857600 bytes with **zero stalls** and
+**0 % ICMP loss**. `scp` of the same volume over the same device reaches
+4.396 MiB/s — within 0.03 % of raw TCP — so the cipher is not the limiting
+factor, the device is.
+
+**A configuration difference worth knowing about.** The two QEMU irqchip models
+are not interchangeable: with `kernel-irqchip=split` the master clock runs at
+200 Hz against a kernel built for `hz = 100`, so the guest's time of day advances
+at **2× real time** and every guest-measured duration is inflated by half again.
+That is why every throughput figure above is host-measured.
+
+**Known limit:** TCP retransmit counts are **not measured**. The guest has no
+`/proc/net`, and for a connection the guest opens, TCP is terminated inside
+QEMU's user-mode stack where the host cannot see it.
+
+### 3. `riscv64/` — freestanding `rv64gc` S-mode kernel prototype
+
+100 % freestanding C11 and GNU assembler on the QEMU `virt` board, built with
+`riscv64-linux-gnu-gcc`, `gas`, `ld` and `make` — the same toolchain family GNU
+Mach itself uses, and no other. `-ffreestanding -nostdlib -nostartfiles`, own
+linker script, no PIC, no unwind tables.
+
+At **milestone 4**:
+
+| capability | how it was established |
+|---|---|
+| OpenSBI v2.0 SBI handshake | `struct sbiret` error/value pair read from `a0`/`a1`, not `a0` alone |
+| S-mode trap vector | `stvec` in direct mode; the frame layout is defined once and shared by the assembly and the C struct, with a `_Static_assert` per member, so drift is a build error |
+| drift-free `stimecmp` timer | deadline advanced by exactly one interval, so the period cannot drift with handler latency |
+| 4 KiB physical allocator | pages handed out aligned and zeroed from a pool the linker script reserves |
+| three-level Sv39 MMU | `satp` + `sfence.vma`, with hardware-enforced `R-X` / `R--` / `RW-` per section — the `R--` is a real fault, not a convention |
+| multi-hart SMP bring-up | the firmware's parked harts released through the SBI HSM extension (`0x48534D`); each installs the **shared** page table and takes its own timer interrupts |
+| PLIC external interrupt | UART receive interrupt, supervisor external interrupt claimed and completed; the S-mode context number `2N+1` derived from the device tree, then **verified by effect** |
+
+`make verify` requires **exactly N harts running at `-smp` N** — 6/6 runs each at
+`-smp` 1, 2, 3 and 4 — because the second harts are the deliverable and a boot
+hart reporting success says nothing about them. Each hart must additionally have
+taken a timer interrupt *with the MMU live*, which is a trap through the shared
+page tables and not merely a flag being set.
+
+`make selftest` exercises three failure paths on purpose: a deliberate illegal
+instruction, a store to the read-only data that must raise a store page fault
+(cause 15), and the PLIC interrupt, for which the host injects a byte into the
+guest's UART over a serial socket.
+
+---
+
+## Repository layout
+
+| path | purpose |
+|---|---|
+| `riscv64/` | the freestanding `rv64gc` S-mode kernel prototype; its own `README.md` has the design rationale and the boot log |
+| `docs/` | `suivi.md` — the chronological engineering log with every measurement; `roadmap-riscv.md` — scope and bring-up path for the RISC-V target |
+| `upstream/` | patches **prepared** for the GNU/Hurd project, one directory per independent submission, each with a cover note giving the problem, the cause, the exact test commands and results, and the known limits. **Nothing here has been sent anywhere.** |
+| `patches/` | consolidated fork patches and the out-of-tree rump build tooling for the virtio network stack |
+| `vm/` | QEMU launch scripts, the SMP trial harness, the guest-side stress and throughput harnesses, and the kernel probes |
+| `scripts/` | `vioif` boot integration: `start-rumpnet.sh`, `interfaces.vioif`, `net-switch-vioif.sh` |
+
+The `gnumach`, `hurd` and `mig` checkouts this work is done in are **not** part
+of this repository; they live outside it, with work on `fork/x86_64` branches.
+
+### The measurement tools in `vm/`
+
+| tool | what it does |
+|---|---|
+| `clock-probe.py` | reads the kernel's timekeeping globals out of guest memory through the QEMU monitor, stamped against the host wall clock |
+| `ap-timer-probe.py` | measures each processor's clock-interrupt rate, which is how the AP's own timer was established |
+| `memread-check.py` | self-checks for those probes; see the trap it guards below |
+| `vga-console.py` | decodes the guest's VGA text console out of guest memory, because the Hurd console is not the serial line |
+| `kprobe.py` | the original kernel thermometer, kept |
+| `vioif-throughput.sh`, `vioif-send.py` | the sustained-throughput experiment over `vioif0` |
+| `riscv-uart-inject.py` | feeds a byte to a guest waiting for one on its serial line, released by a trigger the guest prints rather than by a host timer |
+
+**A measurement trap these guard against.** QEMU's HMP `xp/Nx` reads **bytes**,
+not words: the size suffix is only honoured when it is one of `b`/`h`/`w`/`l`/`q`.
+A reader written for the word form silently reads bytes, picks up the low byte
+of each 32-bit word, and returns numbers that look like counters rather than the
+counters. Separately, the kernel is linked at `0xffffffff80000000` but loaded at
+1 MiB, so a link-time address needs translating for a physical read and is
+already correct for a virtual one. Both mistakes return plausible numbers
+instead of errors, which is why `memread-check.py` exists: a self-referential
+pointer for the translation, `uptime` against `elapsed_ticks` for the width, and
+the per-CPU slots for index and stride.
+
+---
+
+## Reproducing and verification
+
+### `riscv64/`
+
+Needs `gcc-riscv64-linux-gnu`, `binutils-riscv64-linux-gnu`, `qemu-system-misc`
+and `python3`.
+
+```sh
+cd riscv64
+
+make check       # toolchain present?
+make build       # -> build/hurd-riscv64-boot.elf
+make verify      # boot at -smp 1..4; requires exactly N harts running
+make selftest    # illegal instruction, .rodata store fault, PLIC interrupt
+make disasm      # program headers, entry point, first instructions
+make run         # single boot on stdio
 ```
-sudo apt install qemu-system-x86 qemu-utils
-# official Debian hurd-amd64 image (base, NEVER modified in place):
-# https://cdimage.debian.org/cdimage/ports/latest/hurd-amd64/debian-hurd.img.tar.gz
 
-# 1) create an AUTONOMOUS working copy (no backing file):
+`make verify` takes three rounds per hart count by default; `make verify
+ROUNDS=6` is what produced the 6/6 figures above.
+
+Prefix with `LC_ALL=C` if your shell's locale is not English — the Makefile
+exports `LC_ALL=C` for the recipes it runs, but `make`'s own `-C` and
+"nothing to be done" messages are printed by `make` itself, before the Makefile
+is read, and use the invoking environment's locale.
+
+### `x86_64`
+
+Needs a Debian host with `qemu-system-x86`, `qemu-utils` and the official
+Debian Hurd image. Everything runs headless — text console and SSH only; this
+project never runs Xorg, `xdm` or XFCE.
+
+```sh
+# The base image is NEVER modified in place:
+# https://cdimage.debian.org/cdimage/ports/latest/hurd-amd64/
 qemu-img convert -O qcow2 debian-hurd-amd64-*.img hurd-dev.qcow2
 
-# 2) launch (pure console / headless, -m 4G, ssh localhost:2222):
-./vm/run-hurd64.sh            # dev VM (autonomous disk hurd-dev.qcow2)
-./vm/run-hurd64-smp.sh        # -smp 2 test on a disposable overlay — expected: failure
-                              #   GDB=1 adds -gdb tcp::1234 ; STOP=1 adds -S ;
-                              #   FRESH=0 reuses the overlay (kernel already installed)
-./vm/run-hurd64-vioif.sh      # vioif test (network switch) on a disposable overlay
-                              #   BLK=1 attaches a secondary virtio-blk disk (vd0)
+# Single-CPU dev VM on the autonomous working disk
+./vm/run-hurd64.sh
+
+# -smp 2 on a disposable overlay, recreated at every launch
+./vm/run-hurd64-smp.sh
+./vm/run-hurd64-smp.sh /home/ben/hurd-fork/vm/hurd-dev.qcow2   # FRESH=0 reuses it
+
+# The SMP + vioif0 MP stress window (boots, verifies, loads, samples, collects)
+OVL=/path/to/disposable.qcow2 SMP=2 ./vm/smp-stress-run.sh
+
+# The AP timer and the guest clock rate, from the host
+python3 vm/ap-timer-probe.py /path/to/monitor.sock 25
+python3 vm/clock-probe.py    /path/to/monitor.sock 20
+
+# Sustained 100 MiB TCP over vioif0, idle and under load
+./vm/vioif-throughput.sh --mib 100 --dur 60
 ```
 
-> **Disk safety.** Never boot the base image `debian-hurd-amd64-*.img` in
-> write mode, and never re-extract/overwrite it while an overlay references
-> it as its *backing file* (this is what corrupted the disk on 17/10).
-> For any risky experiment (network switch, SMP), use a disposable overlay
-> (`hurd-*-test.qcow2`), or `qemu-img snapshot` first.
+Every VM run wants `-m 4G`. See `AGENTS.md` for the operating rules this
+workspace works under — headless only, disposable overlays only, never a
+mutation of `hurd-dev.qcow2` or `ovl-fork-master.qcow2`.
 
-## VM images
+---
 
-Deliberately **excluded** from the repository (several GB): base Debian
-image `debian-hurd-amd64-*.img` (read-only, do not modify) + autonomous
-working copy `hurd-dev.qcow2` (see `.gitignore`).
+## Safety rules for disk images
+
+- Never boot a base `.img` in write mode.
+- Never re-extract or overwrite an image that is in use as a *backing file*.
+- Use a disposable overlay (`hurd-*-test.qcow2`, recreated at each launch) or a
+  full copy for anything risky. The SMP and throughput experiments use a full
+  copy, so the dev disk is never even opened for writing.
+- `vm/net-switch-vioif.sh` is **locked**: bringing `/dev/eth0` down with rumpnet
+  active freezes the guest on an unacknowledged IRQ 11 and needs a reboot.
+
+## Safety rules for this repository
+
+- `riscv64/` is 100 % freestanding C and GNU assembler. No other language and no
+  other build system appears anywhere in the tree.
+- All documentation, comments and commit messages are in English.
+- Claims are labelled **FACT**, **PLAUSIBLE HYPOTHESIS** or **SPECULATION** in
+  `docs/suivi.md`. A measurement that was not taken is recorded as not measured,
+  including where that is inconvenient.

@@ -1,4 +1,93 @@
-# GNU Hurd x86_64 fork — local base
+# GNU/Hurd `x86_64` — engineering log
+
+<!-- TOC -->
+## Contents
+
+One running log, oldest first. Each section records what was measured, what it means, and what is still unknown; claims are labelled FACT, PLAUSIBLE HYPOTHESIS or SPECULATION so the boundary is never implicit.
+
+- [`Observed state (audit 16/10/2026)`](#observed-state-audit-16102026)
+- [`QEMU scripts`](#qemu-scripts)
+- [`Proposed fork roadmap`](#proposed-fork-roadmap)
+- [`Fork follow-up (16/10/2026)`](#fork-follow-up-16102026)
+- [`Kernel tests (16/10/2026, debian-hurd-amd64 VM, q35/e1000)`](#kernel-tests-16102026-debian-hurd-amd64-vm-q35e1000)
+- [`Network: pcn (16/10/2026, dev VM overlay, QEMU pcnet added)`](#network-pcn-16102026-dev-vm-overlay-qemu-pcnet-added)
+- [`rump virtio-net (`vioif`) on Hurd (17/10/2026) — crash fixed`](#rump-virtio-net-vioif-on-hurd-17102026--crash-fixed)
+- [`pfinet on vioif0 — live test (17/10/2026)`](#pfinet-on-vioif0--live-test-17102026)
+- [`virtio-net (vioif): integration at boot (17/10/2026) — DONE, validated`](#virtio-net-vioif-integration-at-boot-17102026--done-validated)
+- [`Resuming `-smp 2` (17/10/2026) — new observation`](#resuming--smp-2-17102026--new-observation)
+- [`Boot option `maxcpus=N` / `nosmp` (17/10/2026) — kept`](#boot-option-maxcpusn--nosmp-17102026--kept)
+- [`Autopsy of the `-smp 2` hang (17/10/2026) — GDB over QEMU`](#autopsy-of-the--smp-2-hang-17102026--gdb-over-qemu)
+  - [`Result (reproducible)`](#result-reproducible)
+- [`Autopsy of the `-smp 2` hang — 2nd pass: IOAPIC differential **KVM vs QEMU** (17/10/2026)`](#autopsy-of-the--smp-2-hang--2nd-pass-ioapic-differential-kvm-vs-qemu-17102026)
+  - [`Decisive result: the hang follows the KVM-emulated IOAPIC (but not for the assumed reason — see 3rd pass)`](#decisive-result-the-hang-follows-the-kvm-emulated-ioapic-but-not-for-the-assumed-reason--see-3rd-pass)
+  - [`3rd pass: `info pic`/`info irq` under KVM, role of the AP, intermittence (17/10/2026)`](#3rd-pass-info-picinfo-irq-under-kvm-role-of-the-ap-intermittence-17102026)
+  - [`Observed IOAPIC entries (in the working case, `kernel-irqchip=split`)`](#observed-ioapic-entries-in-the-working-case-kernel-irqchipsplit)
+  - [`Hypotheses ruled out by measurement`](#hypotheses-ruled-out-by-measurement)
+  - [`Audit conclusion — no blind fix`](#audit-conclusion--no-blind-fix)
+  - [`Reproduce`](#reproduce)
+  - [`Next experiments (precise)`](#next-experiments-precise)
+  - [`4th pass: locked `FRESH` trap, PIT lead dropped, **measured cause = dead master clock** (18/10/2026)`](#4th-pass-locked-fresh-trap-pit-lead-dropped-measured-cause--dead-master-clock-18102026)
+  - [`5th pass: CPU0 loses its 100 Hz tick at AP start-up — **FIXED** (18/10/2026)`](#5th-pass-cpu0-loses-its-100-hz-tick-at-ap-start-up--fixed-18102026)
+  - [`6th pass: re-verification of the `-smp 2` fix (18/10/2026)`](#6th-pass-re-verification-of-the--smp-2-fix-18102026)
+- [`Virtio storage (`virtio-blk` / `ld_virtio`) (17/10/2026) — recipe ready, not executable here`](#virtio-storage-virtio-blk--ld_virtio-17102026--recipe-ready-not-executable-here)
+  - [`Tooling state`](#tooling-state)
+  - [`Packages side (guest)`](#packages-side-guest)
+  - [`Secondary virtio disk test`](#secondary-virtio-disk-test)
+- [`INCIDENT (17/10/2026) — dev VM disk loss`](#incident-17102026--dev-vm-disk-loss)
+- [`Dev VM rebuild (17/10/2026)`](#dev-vm-rebuild-17102026)
+- [`vioif resolution / network switch (17/10/2026)`](#vioif-resolution--network-switch-17102026)
+- [`Removal of the experimental component workspace (18/10/2026)`](#removal-of-the-experimental-component-workspace-18102026)
+- [`Upstream submission preparation (18/10/2026)`](#upstream-submission-preparation-18102026)
+  - [`Contribution procedure — what was actually verified, and where`](#contribution-procedure--what-was-actually-verified-and-where)
+  - [`FACT — inventory, and where each candidate stands`](#fact--inventory-and-where-each-candidate-stands)
+  - [`FACT — the gnumach SMP series, built and booted on upstream master`](#fact--the-gnumach-smp-series-built-and-booted-on-upstream-master)
+  - [`FACT — the hurd `login` patch, compiled and run in the guest`](#fact--the-hurd-login-patch-compiled-and-run-in-the-guest)
+  - [`FACT — what is on the rump/NetBSD side`](#fact--what-is-on-the-rumpnetbsd-side)
+  - [`PLAUSIBLE HYPOTHESIS`](#plausible-hypothesis)
+  - [`SPECULATION`](#speculation)
+  - [`Left for the owner`](#left-for-the-owner)
+- [`SMP + vioif0 MP stress test (18/10/2026)`](#smp--vioif0-mp-stress-test-18102026)
+  - [`FACT — the setup`](#fact--the-setup)
+  - [`FACT — the workload`](#fact--the-workload)
+  - [`FACT — the results (60 s window, `-smp 2`, `vioif0` up)`](#fact--the-results-60-s-window--smp-2-vioif0-up)
+  - [`FACT — the clock did not freeze`](#fact--the-clock-did-not-freeze)
+  - [`PLAUSIBLE HYPOTHESIS`](#plausible-hypothesis-1)
+  - [`SPECULATION`](#speculation-1)
+  - [`What is still open`](#what-is-still-open)
+- [`RISC-V skeleton: milestone 3, physical memory and the Sv39 MMU (18/10/2026)`](#risc-v-skeleton-milestone-3-physical-memory-and-the-sv39-mmu-18102026)
+  - [`FACT — the drift-free rearm, measured against the old scheme`](#fact--the-drift-free-rearm-measured-against-the-old-scheme)
+  - [`FACT — the physical page allocator`](#fact--the-physical-page-allocator)
+  - [`FACT — the Sv39 page tables and the MMU`](#fact--the-sv39-page-tables-and-the-mmu)
+  - [`FACT — the whole milestone-3 boot`](#fact--the-whole-milestone-3-boot)
+  - [`FACT — the self tests`](#fact--the-self-tests)
+  - [`PLAUSIBLE HYPOTHESIS — recorded, not relied on`](#plausible-hypothesis--recorded-not-relied-on)
+  - [`SPECULATION`](#speculation-2)
+- [`RISC-V skeleton: milestone 4, secondary harts and the PLIC (18/10/2026)`](#risc-v-skeleton-milestone-4-secondary-harts-and-the-plic-18102026)
+  - [`FACT — what was asked of the hardware, and where the answers came from`](#fact--what-was-asked-of-the-hardware-and-where-the-answers-came-from)
+  - [`FACT — the S-mode context number, derived from the device tree`](#fact--the-s-mode-context-number-derived-from-the-device-tree)
+  - [`FACT — the status numbering, measured`](#fact--the-status-numbering-measured)
+  - [`FACT — the four bugs that had to be found first`](#fact--the-four-bugs-that-had-to-be-found-first)
+  - [`FACT — results`](#fact--results)
+  - [`SPECULATION`](#speculation-3)
+- [`x86_64: the AP's LAPIC timer, and heavy vioif0 throughput (18/10/2026)`](#x86_64-the-aps-lapic-timer-and-heavy-vioif0-throughput-18102026)
+  - [`FACT — yes, the application processor takes its own periodic timer interrupts`](#fact--yes-the-application-processor-takes-its-own-periodic-timer-interrupts)
+  - [`FACT — the previous pass's clock figures were right, and a second rate is not`](#fact--the-previous-passs-clock-figures-were-right-and-a-second-rate-is-not)
+  - [`FACT — question 2: vioif0 survives sustained heavy TCP`](#fact--question-2-vioif0-survives-sustained-heavy-tcp)
+  - [`A measurement trap worth recording: `xp/Nx` reads bytes`](#a-measurement-trap-worth-recording-xpnx-reads-bytes)
+  - [`NOT MEASURED — TCP retransmits`](#not-measured--tcp-retransmits)
+  - [`SPECULATION`](#speculation-4)
+- [`Disk safety (permanent rules)`](#disk-safety-permanent-rules)
+- [`References`](#references)
+
+<!-- /TOC -->
+
+One chronological record of what was built, what was measured and what is
+still unknown on the `x86_64` SMP and `vioif0` tracks and on the experimental
+`riscv64/` bring-up. Claims are labelled **FACT**, **PLAUSIBLE HYPOTHESIS** or
+**SPECULATION** so the boundary between what was observed and what was
+inferred is never left implicit.
+
+
 
 Local branches `fork/x86_64` created on `mig`, `gnumach`, `hurd` (upstream = savannah, master of 16/10/2026).
 

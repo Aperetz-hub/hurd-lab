@@ -1,12 +1,39 @@
 # Roadmap: RISC-V port
 
+<!-- TOC -->
+## Contents
+
+Scope, toolchain requirements and the bring-up path for the experimental `riscv64/` target.
+
+- [`1. Scope and history`](#1-scope-and-history)
+- [`2. What exists`](#2-what-exists)
+- [`3. Toolchain setup on a Debian host`](#3-toolchain-setup-on-a-debian-host)
+  - [`3.1 RISC-V cross toolchain`](#31-risc-v-cross-toolchain)
+  - [`3.2 Current state of the reference host`](#32-current-state-of-the-reference-host)
+- [`4. RISC-V path`](#4-risc-v-path)
+  - [`4.1 Boot chain and why each piece exists`](#41-boot-chain-and-why-each-piece-exists)
+  - [`4.2 Milestones`](#42-milestones)
+  - [`4.3 Validation without a Hurd userland`](#43-validation-without-a-hurd-userland)
+- [`5. Integration with the existing build system`](#5-integration-with-the-existing-build-system)
+  - [`5.1 Today`](#51-today)
+  - [`5.2 Cross-compilation`](#52-cross-compilation)
+  - [`5.3 Rules this workspace must not break`](#53-rules-this-workspace-must-not-break)
+- [`6. Open questions`](#6-open-questions)
+
+<!-- /TOC -->
+
 **Date:** 18/10/2026
-**Status:** milestone 3 **built and booted** — the skeleton is freestanding C
+**Status:** **milestone 4 built and booted.** The skeleton is freestanding C11
 and GNU assembler, built with `riscv64-linux-gnu-gcc`, `gas`, `ld` and `make`.
-It installs an S-mode trap vector, switches the MMU on in Sv39 mode with
-per-section permissions, and takes supervisor timer interrupts with the MMU
-live. See `riscv64/README.md` for the boot log and `docs/suivi.md` for the
-measurements.
+It installs an S-mode trap vector with a compile-time-checked frame layout,
+switches the MMU on in Sv39 mode with per-section permissions, takes supervisor
+timer interrupts with the MMU live, releases every other hart of the board
+through the SBI HSM extension, and takes a PLIC external interrupt from the
+UART, claimed and completed. `make verify` requires exactly N harts running at
+`-smp` N, 6/6 runs each at `-smp` 1..4; `make selftest` exercises an illegal
+instruction, a store to the read-only data and the PLIC interrupt on purpose.
+See `riscv64/README.md` for the design and the boot log, and `docs/suivi.md`
+for the measurements and the four bugs that had to be found to get there.
 
 This document is the map for the `riscv64/` expansion path: a 64-bit RISC-V
 (`riscv64`) microkernel / boot target skeleton.
@@ -164,15 +191,22 @@ Three decisions worth keeping in mind when this is extended:
 
 ### 4.2 Milestones
 
-| # | milestone | why it is the next thing |
+| # | milestone | state |
 |---|---|---|
-| 1 | console up | **done** — firmware handoff, `gp`/`sp`/`.bss`, SBI `ecall` |
-| 2 | trap vector + timer | **done** — `stvec` installed, five supervisor timer interrupts taken and counted |
-| 2b | physical memory + MMU | **done** — 4 KiB page allocator, Sv39 page tables with per-section permissions, MMU live while the ticks are taken |
-| 3 | device tree | parse the DTB OpenSBI passes in `a1`; find UART + CLINT. Needed for anything but the Sstc timer |
-| 4 | interrupts | PLIC, UART interrupts, per-hart interrupt stacks, IPL equivalent |
-| 5 | physical memory | page tables, first allocator |
-| 6 | Mach-shaped core | threads, ports, IPC |
+| 1 | console up | **done** — firmware handoff, `gp`/`sp`/`.bss`, SBI `ecall` and the `struct sbiret` error/value pair |
+| 2 | trap vector + timer | **done** — `stvec` installed, frame layout shared with the assembly and checked with `_Static_assert`, drift-free `stimecmp` rearm |
+| 3 | physical memory + MMU | **done** — 4 KiB page allocator, three-level Sv39 page tables with per-section `R-X` / `R--` / `RW-` permissions, MMU live while the ticks are taken |
+| 3b | multi-hart bring-up | **done** — the firmware's parked harts are released through the SBI HSM extension (`0x48534D`), each installs the shared `satp` and takes its own timer interrupts |
+| 3c | first external interrupt | **done** — PLIC, UART receive interrupt, supervisor external interrupt claimed and completed; the S-mode context number (`2N+1`) is derived from the device tree and then verified by effect |
+| 4 | device tree | **open** — parse the DTB OpenSBI passes in `a1` and find the devices from it. Deliberately deferred: up to milestone 3c the board addresses are taken from the board specification and cross-checked against QEMU's own source and a dumped device tree, which is sufficient for this board but not for another one |
+| 5 | interrupt plumbing | **open** — per-hart interrupt stacks (a trap frame on a per-hart stack instead of the interrupted one), and an IPL equivalent |
+| 6 | physical memory | **open** — a real allocator over discovered memory; the fixed 64-page pool is a bump allocator with a counter |
+| 7 | Mach-shaped core | **open** — threads, ports, IPC |
+
+The implementation ran 1, 2 and 3 in that order and then went straight to
+multi-hart and interrupts, which is why the numbers here do not line up with the
+milestone numbers in the commit messages: milestone 3 in the code is physical
+memory and the MMU, and milestone 4 is multi-hart and the PLIC.
 
 **Milestone 3 is where the x86-64 experience must be applied deliberately.**
 The `-smp 2` investigation in `docs/suivi.md` found that GNU Mach advances
