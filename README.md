@@ -66,9 +66,10 @@ messages.
 - `riscv64/` — **experimental**: bare-metal `rv64gc` kernel skeleton for the
   QEMU `virt` board (OpenSBI + SBI console), written in freestanding C and
   GNU assembler and built with `riscv64-linux-gnu-gcc` / `make`, like the rest
-  of this repository. **Built and booted** 18/10/2026: milestone 1 (console up
-  + SBI handshake) runs on QEMU 10.0.13 `virt`. See `riscv64/README.md` and
-  `docs/suivi.md` for what was measured and what is still unknown.
+  of this repository. **Built and booted** 18/10/2026: milestone 2 (console up,
+  SBI handshake, S-mode trap vector, five supervisor timer interrupts) runs on
+  QEMU 10.0.13 `virt`. See `riscv64/README.md` and `docs/suivi.md` for what was
+  measured and what is still unknown.
 - `upstream/` — patches **prepared** for the GNU/Hurd project, one directory
   per submission (`gnumach` and `hurd` targets), each with a cover note
   giving the problem, the cause, the exact test commands and results, and the

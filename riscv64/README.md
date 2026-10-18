@@ -10,12 +10,12 @@ It is written in **freestanding C and GNU assembler**, and built with the same
 kind of toolchain GNU Mach itself uses: `riscv64-linux-gnu-gcc`, `gas`, `ld`
 and `make`. There is no other build system involved.
 
-> Status: **milestone 1 boots** (18/10/2026). `make build` then
-> `make run` produces the kernel's first console line on QEMU `virt` under
-> OpenSBI v1.6, and `make verify` checks it at `-smp` 1, 2, 3 and 4. See
-> "Boot log" below for the captured output, and `docs/suivi.md` for what was
-> measured, what was fixed and what is still unknown. See
-> `docs/roadmap-riscv.md` for the toolchain setup.
+> Status: **milestone 2 boots** (18/10/2026). The kernel installs an S-mode
+> trap vector, takes five supervisor timer interrupts, and reports milestone 2.
+> `make verify` checks it at `-smp` 1, 2, 3 and 4, and `make selftest` checks
+> the exception path on purpose. See "Boot log" below for the captured output,
+> and `docs/suivi.md` for what was measured, what was fixed and what is still
+> unknown. See `docs/roadmap-riscv.md` for the toolchain setup.
 
 ## What is in here
 
@@ -24,15 +24,22 @@ riscv64/
 ├── Makefile                         check / build / run / verify / debug / disasm
 ├── include/
 │   ├── console.h                    console multiplexer API
-│   ├── sbi.h                        SBI ecall wrappers
+│   ├── csr.h                        supervisor CSR accessors
+│   ├── sbi.h                        SBI ecall wrappers, struct sbiret
+│   ├── timer.h                      S-mode timer
+│   ├── trap.h                       struct trap_frame, the C handler
+│   ├── trap_offsets.h               frame layout, shared with the assembly
 │   └── uart.h                       NS16550A driver
 ├── linker/
 │   └── riscv64-virt.ld              image layout for the QEMU virt board
 └── src/
-    ├── boot.S    _start trampoline: hart parking, gp, .bss, call to C
-    ├── main.c    kmain(), the milestone 1 sequence
+    ├── boot.S    _start trampoline: gp, .bss, call to C
+    ├── trap.S    S-mode trap entry: save the frame, call C, sret
+    ├── main.c    kmain(), the milestone 2 sequence
+    ├── trap.c    the C trap handler
+    ├── timer.c   the S-mode timer and the tick counter
     ├── console.c console multiplexer + allocation-free hex/decimal
-    ├── sbi.c     ecall wrappers, console_putc, spec_version, impl_id
+    ├── sbi.c     ecall wrappers, base and TIME extensions
     └── uart.c    polled NS16550A driver for the virt board
 ```
 
@@ -43,6 +50,7 @@ make check      # toolchain present?
 make build      # -> build/hurd-riscv64-boot.elf
 make run        # boot it, headless, serial on stdout
 make verify     # boot at -smp 1..4 and require the milestone banner once
+make selftest   # raise a deliberate illegal instruction, check it is caught
 make disasm     # program headers, entry point, first instructions
 ```
 
@@ -95,6 +103,73 @@ is set by `console_init()` and SBI is the safety net.
 OpenSBI marks `legacy_putch` deprecated in favour of the debug-console (`DBCN`)
 extension, which needs device-tree parsing. That is a milestone, not a blocker.
 
+## SBI: the error and the value are in different registers
+
+The SBI specification (v3.0, section "Binary Encoding") is explicit:
+
+> "SBI functions must return a pair of values in a0 and a1, with a0 returning
+> an error code. This is analogous to returning the C structure
+> `struct sbiret { long error; union { long value; unsigned long uvalue; }; }`"
+
+So `a0` is the error code (0 == `SBI_SUCCESS`) and `a1` carries the answer.
+An earlier version of this skeleton read `a0` only, which is why it printed
+"SBI spec version 0.0" and "SBI impl id 0x0": the calls were *succeeding*, and
+the answers were arriving in `a1`, which the wrapper threw away.
+
+`include/sbi.h` now returns the pair, and the boot log shows both parts so a
+mismatch is visible rather than silent.
+
+The legacy extensions are the exception: the specification says "nothing is
+returned in a1" and "the value returned in a0 register is SBI legacy extension
+specific", so the legacy console has its own wrapper. The earlier code
+addressed the legacy console as if it were a base-extension call (`a7` = 0x10,
+`a6` = 0x00), which is `sbi_get_spec_version`: the character was never sent,
+and the call "succeeded" because the error code of a different function was
+zero. The `!` in the boot log below is that character arriving for the first
+time.
+
+## The S-mode trap vector
+
+`src/trap.S` is installed in `stvec` in direct mode. It saves the interrupted
+context in a frame on the interrupted stack, calls `trap_handler()` with a
+pointer to that frame, restores everything, and returns with `sret`.
+
+The frame layout lives in `include/trap_offsets.h` and is used by *both* the
+assembly and the C struct in `include/trap.h`, which then checks every member
+offset with `_Static_assert`. A mismatch between the two sides is a build
+error, not a trap that silently corrupts the stack.
+
+Two facts about this platform make the layout work:
+
+- the `ecall` from S-mode is **not** delegated to S-mode (`medeleg` bit 9 is
+  clear), so the SBI call path traps straight to M-mode and never touches the
+  S-mode `stvec`. Installing our own vector therefore does not break the SBI
+  calls;
+- `menvcfg` and `mideleg` are machine-mode CSRs, so they cannot be read from
+  S-mode at all. Reading `menvcfg` raises an illegal instruction, which is
+  how that was found. The delegation state therefore has to be established by
+  its effect — does the tick arrive? — and not by reading a register.
+
+`make selftest` builds a variant that raises a deliberate illegal instruction
+right after the vector is installed, and checks that the handler catches it
+and reports `scause`, `sepc` and `stval`.
+
+## The S-mode timer
+
+The hart advertises the `sstc` extension, so `stimecmp` can be written
+directly from S-mode. The kernel reads `time` with `rdtime`, adds an interval
+of 100000 ticks (10 ms on the 10 MHz timebase the board reports) and writes
+the deadline, then enables `sie.STIE` and `sstatus.SIE`.
+
+The SBI TIME extension is asked first (`sbi_timer_set_stimecmp`, FID #7) and
+the direct `stimecmp` write is the fallback; the boot log says which one was
+used and why. The rearm inside the trap handler always uses the CSR, so no
+`ecall` is made in interrupt context.
+
+The measured interval between the first two ticks is 100698 to 101739 ticks
+over five runs, against a programmed 100000: the excess is the time between
+the interrupt being taken and the rearm write, about 70 to 170 microseconds.
+
 ## Boot log (captured 18/10/2026)
 
 ```
@@ -110,12 +185,33 @@ banner, which ends with `Domain0 Next Address: 0x0000000080200000`,
 ```
 hurd-riscv64: console up (rv64gc, QEMU virt)
 SBI hart id 0x0
-
+!
 SBI legacy_putc works: yes
-SBI spec version 0.0
-SBI impl id 0x0
-hurd-riscv64: milestone 1 reached, halting
+SBI spec version 2.0 (error 0, value 0x2000000)
+SBI impl id 0x1 (error 0)
+SBI impl version 0x10006 (error 0)
+SBI extension probe base eid 0x10 -> 1 (error 0)
+SBI extension probe legacy console eid 0x1 -> 1 (error 0)
+SBI extension probe time eid 0x54494d45 -> 1 (error 0)
+SBI wall clock 0 (error 0)
+SBI timebase 0 (error -2)
+hurd-riscv64: milestone 1 reached
+firmware stvec was 0x80200000
+installed stvec 0x802009c0
+timer armed by stimecmp CSR at 1270504 (SBI sbi_timer_set_stimecmp error -2)
+timer tick 1 at 1273996
+timer tick 2 at 1375252 (interval 101256 ticks)
+timer tick 3 at 1476729
+timer tick 4 at 1579142
+timer tick 5 at 1680002
+hurd-riscv64: milestone 2 reached, halting
 ```
+
+The `!` on its own line is the character the legacy console extension
+produced, which the earlier implementation never actually sent.
+
+The firmware's own `stvec` was `0x80200000`, which is `_start`: a trap taken
+before our vector is installed would have jumped back to the entry point.
 
 `SBI hart id` is the SBI boot-protocol hart id read out of `a0`. It was
 added in this pass precisely so that the "a0 is the hart id" claim is
@@ -124,23 +220,31 @@ whichever hart the firmware booted, so the capture above is one run among
 several. `make verify` automates the check that the milestone banner appears
 exactly once per boot, at every hart count, over several runs.
 
-## Known defects, not fixed here
+## Known limitations, not fixed here
 
-Found while bringing this up; both are recorded rather than silently repaired,
-because the bring-up brief was to fix only what blocked the first boot.
-
-- **The SBI base-extension calls return 0.** `sbi_get_spec_version()` returns
-  0 although OpenSBI reports `Runtime SBI Version : 2.0`, and
-  `sbi_get_impl_id()` returns 0; `legacy_putch` also reports success while the
-  `!` it was asked to emit does not appear anywhere in the captured console.
-  The disassembly shows spec-conformant calls (`li a7,16` with `li a6,0` or
-  `li a6,1` and a single `ecall`), so the calling convention is right and the
-  cause is not established. Consequently the skeleton's own string "SBI
-  legacy_putc works: yes" is a claim the capture does not corroborate.
-- **There is no trap handler.** `stvec` is never programmed, so an exception
-  in S-mode is fatal and silent. A future milestone needs one; until then, a
-  trap looks exactly like a hang.
 - **Only the boot hart runs the kernel.** The other harts are held by the
   firmware and never reach `_start`; nothing in this skeleton starts them.
-  That is deliberate for milestone 1, but it means "the second CPU works" is
-  still an unproven claim, exactly as on the x86_64 side.
+  The timer therefore ticks on one hart only. "The second CPU works" is still
+  an unproven claim, exactly as on the x86_64 side.
+- **The firmware does not implement `sbi_timer_set_stimecmp`.** The call
+  returns `SBI_ERR_NOT_SUPPORTED` (-2), so the first deadline is armed by
+  writing the `stimecmp` CSR directly. The SBI TIME extension *is* present
+  and *is* used, for the wall clock and for the extension probe.
+- **The firmware does not implement `sbi_timer_timebase`.** Also -2. The
+  10 MHz timebase is therefore taken from the board's own description
+  (`aclint-mtimer @ 10000000Hz`) rather than from the firmware, and the
+  measured interval is printed so the assumption can be checked.
+- **The delegation state cannot be read from S-mode.** `menvcfg` and `mideleg`
+  are machine-mode CSRs; reading `menvcfg` traps. The timer therefore relies
+  on the tick arriving, which is the only observation available from S-mode.
+- **Any exception is fatal.** The handler reports `scause`, `sepc` and `stval`
+  and stops the hart. There is no process to kill and no other hart to report
+  to, so there is nothing else to do — but a kernel that can recover is the
+  obvious next step.
+- **`stimecmp` requires the firmware to have set `menvcfg.STCE`.** If it had
+  not, the write would raise an illegal instruction; the handler would report
+  it, so the failure would be visible rather than a silent hang.
+- **The trap frame is allocated on the interrupted stack.** That is enough for
+  one hart and one trap at a time, and it keeps the design small, but a
+  per-hart trap stack (`sscratch`) would be the right thing once more harts
+  exist.

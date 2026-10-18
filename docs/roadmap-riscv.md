@@ -1,10 +1,10 @@
 # Roadmap: RISC-V port
 
 **Date:** 18/10/2026
-**Status:** milestone 1 **built and booted** — the skeleton is freestanding C
+**Status:** milestone 2 **built and booted** — the skeleton is freestanding C
 and GNU assembler, built with `riscv64-linux-gnu-gcc`, `gas`, `ld` and `make`.
-See `riscv64/README.md` for the boot log and `docs/suivi.md` for the
-measurements.
+It installs an S-mode trap vector and takes supervisor timer interrupts. See
+`riscv64/README.md` for the boot log and `docs/suivi.md` for the measurements.
 
 This document is the map for the `riscv64/` expansion path: a 64-bit RISC-V
 (`riscv64`) microkernel / boot target skeleton.
@@ -42,17 +42,23 @@ one GNU Mach itself is built with.
 | path | purpose |
 |---|---|
 | `riscv64/README.md` | the rv64gc skeleton: boot contract, console design, milestones, known defects |
-| `riscv64/Makefile` | `check` / `build` / `run` / `verify` / `debug` / `disasm` / `clean` |
+| `riscv64/Makefile` | `check` / `build` / `run` / `verify` / `selftest` / `debug` / `disasm` / `clean` |
 | `riscv64/linker/riscv64-virt.ld` | image layout for the QEMU `virt` board |
-| `riscv64/include/` | `console.h`, `sbi.h`, `uart.h` |
+| `riscv64/include/` | `console.h`, `csr.h`, `sbi.h`, `timer.h`, `trap.h`, `trap_offsets.h`, `uart.h` |
 | `riscv64/src/` | the kernel skeleton itself (see below) |
 
 Inside `riscv64/src`:
 
-- `boot.S` — `_start` trampoline: park non-boot harts, load `gp`, set `sp`,
-  zero `.bss`, call `kmain`.
-- `sbi.c` — SBI `ecall` wrappers (`a7` = extension, `a6` = function), with
-  `console_putc`, `spec_version`, `impl_id`.
+- `boot.S` — `_start` trampoline: load `gp`, set `sp`, zero `.bss`, call
+  `kmain`.
+- `trap.S` — the S-mode trap entry: save the frame, call the C handler,
+  restore, `sret`.
+- `trap.c` — the C trap handler, and `trap_offsets.h` / `trap.h`, which share
+  the frame layout and check it with `_Static_assert`.
+- `timer.c` — the S-mode timer: `rdtime` plus an interval, written to
+  `stimecmp`, plus the tick counter.
+- `sbi.c` — SBI `ecall` wrappers returning the `struct sbiret` pair, for the
+  base and TIME extensions and for the legacy console.
 - `uart.c` — polled NS16550A driver for the QEMU `virt` board (`0x1000_0000`).
 - `console.c` — sink multiplexer plus allocation-free `putc`/`puts`/`puthex`.
 - `main.c` — `kmain()`, and an allocation-free `putdec`.
@@ -122,9 +128,12 @@ QEMU (-machine virt)
             ├─ zero .bss                __bss_start .. __bss_end
             └─ call kmain
                  ├─ console_init()      NS16550A @ 0x1000_0000
-                 ├─ SBI console_putc    extension 0x01, proves the ecall path
-                 ├─ SBI spec version    (major << 24) | minor
-                 └─ wfi                 park (no scheduler yet)
+                 ├─ SBI base extension  spec version, impl id/version, probes
+                 ├─ legacy console      extension 0x01, proves the ecall path
+                 ├─ stvec = trap_entry  the S-mode trap vector
+                 ├─ stimecmp = time+Δ   arm the S-mode timer
+                 └─ wfi                 wait for the timer interrupts
+                      └─ trap.S → trap.c  five ticks, then milestone 2
 ```
 
 Three decisions worth keeping in mind when this is extended:
@@ -151,11 +160,12 @@ Three decisions worth keeping in mind when this is extended:
 
 | # | milestone | why it is the next thing |
 |---|---|---|
-| 1 | console up | **done** — firmware handoff, `gp`/`sp`/`.bss`, SBI `ecall`, halt path |
-| 2 | device tree | parse the DTB OpenSBI passes in `a1`; find UART + CLINT. No timer before this |
-| 3 | timer + traps | CLINT `mtime`, trap handler, interrupt vector table, per-hart interrupt stacks, IPL equivalent |
-| 4 | physical memory | PLIC, UART interrupts, page tables, first allocator |
-| 5 | Mach-shaped core | threads, ports, IPC |
+| 1 | console up | **done** — firmware handoff, `gp`/`sp`/`.bss`, SBI `ecall` |
+| 2 | trap vector + timer | **done** — `stvec` installed, five supervisor timer interrupts taken and counted |
+| 3 | device tree | parse the DTB OpenSBI passes in `a1`; find UART + CLINT. Needed for anything but the Sstc timer |
+| 4 | interrupts | PLIC, UART interrupts, per-hart interrupt stacks, IPL equivalent |
+| 5 | physical memory | page tables, first allocator |
+| 6 | Mach-shaped core | threads, ports, IPC |
 
 **Milestone 3 is where the x86-64 experience must be applied deliberately.**
 The `-smp 2` investigation in `docs/suivi.md` found that GNU Mach advances
@@ -183,6 +193,10 @@ Every milestone is validated against the host, not against a userland:
   requires the milestone banner exactly once per run. The repetition is not
   paranoia: the firmware's choice of boot hart varies between runs, and a
   single run per hart count does not exercise that.
+- `riscv64/make selftest` — builds a variant that raises a deliberate illegal
+  instruction after the trap vector is installed, and requires the handler to
+  report it. This is how the exception path is kept honest without breaking
+  the normal boot.
 - `riscv64/make disasm` — check `_start` really landed at the load address and
   that `.bss` symbols exist; this catches linker-script mistakes that would
   otherwise appear as a silent hang.
@@ -246,8 +260,11 @@ inspection (`make disasm`).
 2. **Toolchain availability.** `qemu-system-riscv64` and
    `riscv64-linux-gnu-gcc` are present on the reference host, so
    `riscv64/make check` passes; milestones 2 to 5 remain unwritten.
-3. **Whether a trap handler is needed before milestone 2.** The current
-   skeleton never programs `stvec`, so an exception in S-mode is fatal and
-   silent. Milestone 2 (device tree) is the first place where a real fault can
-   be expected, so the handler should probably land with it rather than
-   before.
+3. **How to start the other harts.** The firmware holds them; starting them
+   is an SBI HSM operation, and the kernel needs a per-hart trap stack
+   (`sscratch`) before it can do that safely, since the current trap frame
+   lives on the interrupted hart's stack.
+4. **Whether the device tree is needed at all for the timer.** The `sstc`
+   extension is enough to arm `stimecmp` without parsing the DTB, so the
+   device tree milestone could be deferred past the PLIC work if a simpler
+   path exists to the UART interrupts.

@@ -4,11 +4,10 @@
 
 #include "sbi.h"
 
-struct sbi_result
-sbi_ecall(unsigned long eid, unsigned long fid, unsigned long arg0,
-	   unsigned long arg1)
+struct sbiret
+sbi_ecall(unsigned long eid, unsigned long fid, unsigned long arg0)
 {
-	struct sbi_result r;
+	struct sbiret r;
 
 	/*
 	 * Bind the SBI argument registers explicitly. "+r" on a0/a1 gives the
@@ -17,7 +16,7 @@ sbi_ecall(unsigned long eid, unsigned long fid, unsigned long arg0,
 	 * compiler from moving memory accesses across the trap.
 	 */
 	register unsigned long a0 __asm__("a0") = arg0;
-	register unsigned long a1 __asm__("a1") = arg1;
+	register unsigned long a1 __asm__("a1") = 0;
 	register unsigned long a6 __asm__("a6") = fid;
 	register unsigned long a7 __asm__("a7") = eid;
 
@@ -26,30 +25,69 @@ sbi_ecall(unsigned long eid, unsigned long fid, unsigned long arg0,
 			  : "r" (a6), "r" (a7)
 			  : "memory");
 
-	r.a0 = (long)a0;
-	r.a1 = (long)a1;
+	r.error = (long)a0;
+	r.value = (long)a1;
 	return r;
 }
 
+struct sbiret
+sbi_get_spec_version(void)
+{
+	return sbi_ecall(SBI_EID_BASE, SBI_FID_BASE_GET_SPEC_VERSION, 0);
+}
+
+struct sbiret
+sbi_get_impl_id(void)
+{
+	return sbi_ecall(SBI_EID_BASE, SBI_FID_BASE_GET_IMPL_ID, 0);
+}
+
+struct sbiret
+sbi_get_impl_version(void)
+{
+	return sbi_ecall(SBI_EID_BASE, SBI_FID_BASE_GET_IMPL_VERSION, 0);
+}
+
+struct sbiret
+sbi_probe_extension(unsigned long eid)
+{
+	return sbi_ecall(SBI_EID_BASE, SBI_FID_BASE_PROBE_EXTENSION, eid);
+}
+
+struct sbiret
+sbi_timer_time(void)
+{
+	return sbi_ecall(SBI_EID_TIME, SBI_FID_TIME_GET_TIME, 0);
+}
+
+struct sbiret
+sbi_timer_timebase(void)
+{
+	return sbi_ecall(SBI_EID_TIME, SBI_FID_TIME_GET_TIMEBASE, 0);
+}
+
+struct sbiret
+sbi_timer_set_stimecmp(unsigned long deadline)
+{
+	return sbi_ecall(SBI_EID_TIME, SBI_FID_TIME_SET_STIMECMP, deadline);
+}
+
 int
-sbi_console_putc(char byte)
+sbi_legacy_console_putc(char byte)
 {
-	struct sbi_result r;
+	register unsigned long a0 __asm__("a0") = (unsigned long)byte;
+	register unsigned long a1 __asm__("a1") = 0;
+	register unsigned long a6 __asm__("a6") = SBI_FID_LEGACY_CONSOLE_PUTCHAR;
+	register unsigned long a7 __asm__("a7") = SBI_EID_LEGACY_CONSOLE;
 
-	r = sbi_ecall(SBI_SYSCALL, SBI_FN_LEGACY_PUTCH, (unsigned long)byte,
-		      SBI_EXT_LEGACY_CONSOLE);
-	/* SBI_ERR_NO_ERROR is 0; anything else is -EIO / -ENOSYS / ... per spec. */
-	return r.a0 == 0;
-}
+	/*
+	 * The legacy extensions ignore a6 and return their result in a0; a1 is
+	 * not used as an output register here.
+	 */
+	__asm__ volatile ("ecall"
+			  : "+r" (a0)
+			  : "r" (a1), "r" (a6), "r" (a7)
+			  : "memory");
 
-long
-sbi_spec_version(void)
-{
-	return sbi_ecall(SBI_SYSCALL, SBI_FN_GET_SPEC_VERSION, 0, 0).a0;
-}
-
-long
-sbi_impl_id(void)
-{
-	return sbi_ecall(SBI_SYSCALL, SBI_FN_GET_IMPL_ID, 0, 0).a0;
+	return a0 == 0;
 }

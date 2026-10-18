@@ -28,13 +28,13 @@ console_putc(char byte)
 		if (uart_ready)
 			uart_putc('\r');
 		else
-			(void)sbi_console_putc('\r');
+			(void)sbi_legacy_console_putc('\r');
 	}
 
 	if (uart_ready)
 		uart_putc(byte);
 	else
-		(void)sbi_console_putc(byte);
+		(void)sbi_legacy_console_putc(byte);
 }
 
 void
@@ -62,6 +62,18 @@ console_putdec(uint64_t value)
 
 	while (n > 0)
 		console_putc(digits[--n]);
+}
+
+void
+console_putdec_signed(int64_t value)
+{
+	if (value < 0) {
+		console_putc('-');
+		/* Negate in unsigned space so that INT64_MIN does not overflow. */
+		console_putdec((uint64_t)0 - (uint64_t)value);
+		return;
+	}
+	console_putdec((uint64_t)value);
 }
 
 void

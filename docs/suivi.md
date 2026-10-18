@@ -1321,180 +1321,141 @@ is what was built and measured here.
   patches as one series or patch 1 alone;
 - actually send them. This session did not.
 
-## RISC-V skeleton: first boot, then conversion to C (18/10/2026)
+## RISC-V skeleton: first boot, conversion to C, then milestone 2 (18/10/2026)
 
-Milestone 1 only. The success criterion for this pass — the kernel's first SBI
-console message appears — is met. Everything after it is untouched.
+Milestone 1 and milestone 2 only. The success criterion for milestone 2 — the
+kernel installs an S-mode trap vector, takes five supervisor timer interrupts
+and reports milestone 2 — is met. Everything after it is untouched.
 
-### FACT — toolchain (step 3.1: re-verified, and the earlier report was wrong)
+### FACT — the SBI return convention, and the bug it explains
 
-```
-$ command -v qemu-system-riscv64 riscv64-linux-gnu-gcc riscv64-linux-gnu-ld
-/usr/bin/qemu-system-riscv64
-/usr/bin/riscv64-linux-gnu-gcc
-/usr/bin/riscv64-linux-gnu-ld
+The RISC-V SBI specification, version v3.0, section "Binary Encoding"
+(<https://docs.riscv.org/reference/sbi/v3.0/binary-encoding.html>), reads:
 
-$ qemu-system-riscv64 --version | head -1
-QEMU emulator version 10.0.13 (Debian 1:10.0.13+ds-0+deb13u1)
+> "SBI functions must return a pair of values in a0 and a1, with a0 returning
+> an error code. This is analogous to returning the C structure
+> `struct sbiret { long error; union { long value; unsigned long uvalue; }; }`"
 
-$ riscv64-linux-gnu-gcc --version | head -1
-riscv64-linux-gnu-gcc (Debian 14.2.0-19) 14.2.0
+and the base extension page
+(<https://docs.riscv.org/reference/sbi/ext-base.html>) gives the same
+signature, `struct sbiret sbi_get_spec_version(void);`.
 
-$ riscv64-linux-gnu-ld --version | head -1
-GNU ld (GNU Binutils for Debian) 2.44
-
-$ ls /usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin
-/usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin
-```
-
-So the emulator, the cross compiler and the OpenSBI firmware are all present.
-`docs/roadmap-riscv.md` §3.2 had said the first two were absent; that
-statement was stale and has been corrected.
-
-**No package installation was needed, so the privilege question never arose.**
-For the record, installing anything via `apt` *would* have been blocked:
+The skeleton had been reading `a0` only, so every base-extension call
+reported "0". With both registers read, the same calls answer:
 
 ```
-$ sudo -n true
-sudo: The "no new privileges" flag is set. It prevents sudo from running as root.
+SBI spec version 2.0 (error 0, value 0x2000000)
+SBI impl id 0x1 (error 0)
+SBI impl version 0x10006 (error 0)
 ```
 
-### FACT — what existed before
+`include/sbi.h` now returns `struct sbiret { long error; long value; }` and
+the boot log prints both parts, so a future mismatch is visible instead of
+silent.
 
-Twelve files: a workspace manifest, a toolchain pin, a build configuration, a
-`Makefile`, a `README.md`, and one crate with its own manifest, a linker
-script and six sources. So the linker script, the boot trampoline and the SBI
-console code all existed. What was missing was the opposite of a design:
-nothing had ever been compiled.
+**FACT.** The same mistake explained the second anomaly, the legacy console.
+The old code addressed it as if it were a base-extension call (`a7` = 0x10,
+`a6` = 0x00), which is `sbi_get_spec_version`: the character was never sent,
+and the call "succeeded" because the error code of a *different* function was
+zero. The legacy extensions have their own convention — the specification
+says "nothing is returned in a1" and "the value returned in a0 register is SBI
+legacy extension specific" — so they now have their own wrapper, with
+`a7` = 0x01. The `!` that the old code asked for now appears in the console
+for the first time.
 
-### FACT — the build, and the three defects that stopped it
+**FACT.** The firmware does not implement two of the SBI TIME functions the
+kernel asked for, and says so: `sbi_timer_set_stimecmp` and
+`sbi_timer_timebase` both return -2 (`SBI_ERR_NOT_SUPPORTED`). The extension
+itself is present: `sbi_probe_extension(0x54494d45)` returns 1.
 
-First build, verbatim:
+### FACT — the S-mode trap vector
 
-```
-error[E0423]: cannot find function `write` in this scope
-  --> crates/hurd-riscv64-boot/src/console.rs:31:5
-   |
-31 |     write("hurd-riscv64: console up (rv64gc, QEMU virt)\r\n");
-   |     ^^^^^ not found in this scope
-error: could not compile `hurd-riscv64-boot` (bin "hurd-riscv64-boot")
-make: *** [Makefile:40: build] Error 101
-```
+`src/trap.S` is installed in `stvec` in direct mode, saves the interrupted
+context on the interrupted stack, calls the C handler with a pointer to the
+frame, restores everything and returns with `sret`.
 
-The console module's string helper is called `puts`; `write` was a typo.
-Fixed by changing the one call.
+The frame layout lives in `include/trap_offsets.h` and is used by *both* the
+assembly and the C struct in `include/trap.h`, which then checks every member
+offset with `_Static_assert`. The first build of that header failed its own
+assertion — the struct was 280 bytes and the assembly allocated 288 — which
+is the check doing its job.
 
-Second build:
+**FACT.** Two properties of this platform decide how the vector may be
+installed, and both were measured rather than assumed.
 
-```
-error: linking with the linker driver failed: exit status: 1
-  = note: cannot find linker script linker/riscv64-virt.ld
-```
+- The `ecall` from S-mode is **not** delegated to S-mode. The firmware reports
+  `Boot HART MEDELEG : 0x0000000000f4b509`, and decoding it shows bit 9
+  (environment call from S-mode) clear, while bits 0, 3, 8, 10, 12, 13, 15,
+  18 and 20 to 23 are set. The SBI `ecall` therefore traps straight to M-mode
+  and never touches the S-mode `stvec`, so installing our own vector does not
+  break the SBI path.
+- The firmware's own `stvec` was `0x80200000`, which is `_start`: a trap
+  taken before our vector is installed would have jumped back to the entry
+  point. The kernel now prints the old value before overwriting it.
 
-The build configuration passed `-Tlinker/riscv64-virt.ld`, which is relative to
-the *crate*, but the link step runs with the **workspace root** as its working
-directory. Confirmed by trying the workspace-relative path, which linked
-immediately. Fixed, with a comment recording the cwd dependency.
-
-### FACT — the first boot, and the defect that made it silent
-
-The first boot after fixing the two build errors produced **no kernel output
-at all** — only OpenSBI's banner, ending with
-`Domain0 Next Address: 0x0000000080200000` / `Domain0 Next Mode: S-mode`.
-Rather than guess, the machine was asked:
-
-```
-$ qemu-system-riscv64 ... -d int,guest_errors -D /tmp/qemu-int.log
-riscv_cpu_do_interrupt: hart:0, async:0, cause:0000000000000002,
-    epc:0x0000000080200000, tval:0x00000000f14022f3, desc=illegal_instruction
-   (repeated 2.4 million times)
-```
-
-`cause 2` is an illegal instruction, at `epc = 0x80200000`, and `tval` is the
-faulting instruction word, which `objdump` identifies as the **first**
-instruction of `_start`:
+**FACT.** `menvcfg` and `mideleg` are machine-mode CSRs and cannot be read
+from S-mode. The first version of the timer code read `menvcfg` to check
+`STCE`, and the very first trap was the consequence:
 
 ```
-80200000: f14022f3   csrr t0,mhartid
+trap: exception cause=0x2 code=0x2 sepc=0x8020083c stval=0x30a02573
 ```
 
-`mhartid` is a machine-mode CSR. Reading it from S-mode raises an illegal
-instruction exception, so the hart trapped on its very first instruction and
-never reached `kmain`. OpenSBI's S-mode entry passes the hart id in `a0`, so
-the park loop now reads `a0`:
+`stval` decodes as `csrr t3, menvcfg`, i.e. the read of a machine-mode CSR
+from S-mode, which raises an illegal instruction. The reads were removed; the
+delegation state is now established by its effect, namely whether the tick
+arrives.
 
-```
-80200000: e101   bnez a0,80200000 <_start>
-```
+### FACT — the timer, and the exception path, measured
 
-Boot after that change, `-smp 1`, `-m 256M`, `-bios default`:
+Boot on QEMU 10.0.13 `virt`, `-m 256M`, `-bios default`:
 
 ```
 hurd-riscv64: console up (rv64gc, QEMU virt)
 SBI hart id 0x0
-
+!
 SBI legacy_putc works: yes
-SBI spec version 0.0
-SBI impl id 0x0
-hurd-riscv64: milestone 1 reached, halting
+SBI spec version 2.0 (error 0, value 0x2000000)
+SBI impl id 0x1 (error 0)
+SBI impl version 0x10006 (error 0)
+SBI extension probe base eid 0x10 -> 1 (error 0)
+SBI extension probe legacy console eid 0x1 -> 1 (error 0)
+SBI extension probe time eid 0x54494d45 -> 1 (error 0)
+SBI wall clock 0 (error 0)
+SBI timebase 0 (error -2)
+hurd-riscv64: milestone 1 reached
+firmware stvec was 0x80200000
+installed stvec 0x802009c0
+timer armed by stimecmp CSR at 1270504 (SBI sbi_timer_set_stimecmp error -2)
+timer tick 1 at 1273996
+timer tick 2 at 1375252 (interval 101256 ticks)
+timer tick 3 at 1476729
+timer tick 4 at 1579142
+timer tick 5 at 1680002
+hurd-riscv64: milestone 2 reached, halting
 ```
 
-The image is a RISC-V `EXEC` ELF with entry point and first `PT_LOAD` both at
-`0x80200000`, matching what OpenSBI hands over.
+The interval is programmed as 100000 ticks, which is 10 ms on the 10 MHz
+timebase the board reports (`aclint-mtimer @ 10000000Hz`). The measured
+interval between the first two ticks, over five runs, was 100698, 100776,
+101739, 101632 and 101684 ticks. The excess of roughly 700 to 1700 ticks
+(70 to 170 microseconds) is the time between the interrupt being taken and
+the rearm write.
 
-The `SBI hart id` line was added so that "`a0` is the hart id" would be
-measured instead of assumed. It first printed `0xa`, which was wrong: the
-value was read after the console had been initialised, and a function call is
-free to clobber `a0`. Capturing it before the first call prints the real id.
-
-### FACT — the boot hart is not hart 0, and the park loop was parking the kernel
-
-The first version of the boot path parked every hart whose id was not zero,
-on the assumption that the firmware always boots hart 0. That assumption is
-false, and the failure only shows up intermittently:
+**FACT.** The exception path is checked on purpose, not by accident.
+`make selftest` builds a variant that raises a deliberate illegal instruction
+(`.word 0x00000000`) right after the vector is installed, and requires the
+handler to report it:
 
 ```
-$ for i in 1 2 3 4 5 6; do
-    qemu-system-riscv64 -machine virt -m 256M -nographic -no-reboot \
-        -smp 3 -bios default -kernel build/hurd-riscv64-boot.elf
-  done
-  run 1: Boot HART ID                : 1 | banner x0
-  run 2: Boot HART ID                : 0 | banner x1
-  run 3: Boot HART ID                : 0 | banner x1
-  run 4: Boot HART ID                : 1 | banner x0
-  run 5: Boot HART ID                : 2 | banner x0
-  run 6: Boot HART ID                : 2 | banner x0
+self-test: raising an illegal instruction
+trap: exception cause=0x2 code=0x2 sepc=0x802002e8 stval=0x0
+  selftest: PASS, the exception was caught and reported
 ```
 
-The banner's own `Boot HART ID` line is the tell: the firmware picks whichever
-hart wins the race to the reset vector, and on this host it was 0, 1 and 2 on
-different runs. Whenever it was not 0, the park loop parked the *boot hart*,
-the kernel never started, and the capture stopped after OpenSBI's banner with
-no error of any kind. Two runs out of six failed.
-
-The question "how many harts actually reach the kernel?" was answered by
-measurement rather than by reading the firmware: the park loop was replaced by
-a no-op, and the hart id was printed:
-
-```
-  -smp 1 : Boot HART ID : 0 -> kernel harts seen: [hart id 0x0]
-  -smp 2 : Boot HART ID : 0 -> kernel harts seen: [hart id 0x0]
-  -smp 3 : Boot HART ID : 1 -> kernel harts seen: [hart id 0x1]
-  -smp 4 : Boot HART ID : 3 -> kernel harts seen: [hart id 0x3]
-```
-
-Exactly one hart reaches the kernel in every configuration, and it is the one
-the firmware picked. The other harts never get here, so the park loop was not
-only unnecessary, it was harmful.
-
-The fix is to remove the loop from the boot path. Parking belongs in the path
-that *releases* further harts, which does not exist yet: starting them is
-what the SBI HSM extension is for, and a later milestone will own that. With
-the loop removed, eight consecutive `-smp 3` runs all booted, with the kernel
-reporting hart id `0x0` and `0x2` on different runs.
-
-`make verify` was changed to boot each hart count several times, because one
-run per count does not exercise a varying boot hart. It is now:
+**FACT.** `make verify`, which boots at `-smp` 1 to 4, three runs each, and
+requires both the milestone 1 and the milestone 2 banner exactly once per
+run:
 
 ```
   -smp 1 : BOOT, banner x1 on 3/3 runs
@@ -1503,109 +1464,22 @@ run per count does not exercise a varying boot hart. It is now:
   -smp 4 : BOOT, banner x1 on 3/3 runs
 ```
 
-The same defect was present in the previous implementation of this skeleton
-and was not caught earlier, because the earlier spot-check happened to run
-when the firmware had picked hart 0 every time.
-
-### FACT — `make disasm` was broken
-
-```
-$ make disasm
-== entry point ==
-make: *** [Makefile:72: disasm] Error 1
-```
-
-Two independent causes, both reproduced: the host `readelf` is French-localized
-so `grep -i "entry point"` never matches ("Point d'entrée"), and the host
-`objdump` refuses the file outright
-(`objdump: cannot disassemble for architecture UNKNOWN!`). The target now uses
-the cross binutils when present and runs under `LC_ALL=C`.
-
-### FACT — conversion of the skeleton to C and GNU assembler (18/10/2026)
-
-The whole repository now uses one toolchain family, the one GNU Mach itself is
-built with. `riscv64/` was rewritten as freestanding C plus one assembly
-trampoline:
-
-| before | after |
-|---|---|
-| workspace manifest, toolchain pin, build configuration, lock file | `Makefile` driving `riscv64-linux-gnu-gcc` |
-| `src/boot.rs` (inline assembly in the source) | `src/boot.S`, assembled by `gas` |
-| `src/main.rs`, `src/console.rs`, `src/sbi.rs`, `src/uart.rs` | `src/main.c`, `src/console.c`, `src/sbi.c`, `src/uart.c` |
-| `crates/hurd-riscv64-boot/linker/riscv64-virt.ld` | `linker/riscv64-virt.ld` (unchanged content) |
-| crate-local headers | `include/console.h`, `include/sbi.h`, `include/uart.h` |
-
-Build flags: `-ffreestanding -nostdlib -nostartfiles -fno-builtin -fno-common
--fno-pic -fno-pie -no-pie -fno-asynchronous-unwind-tables -fno-unwind-tables
--fno-stack-protector -mcmodel=medany`, linked with `-T linker/riscv64-virt.ld
--Wl,--gc-sections` and `-lgcc`. `medany` is required because the image lives
-at `0x8020_0000`, above the signed 2 GiB reach of the `medlow` default.
-
-Two build problems had to be solved on the way, both recorded because they are
-easy to hit again:
-
-- the phony `build` target and the `build/` output directory collided, and
-  make reported a circular dependency; the directory is now created through a
-  stamp file, and the per-source subdirectories are created per object;
-- `0x1000_0000` is a C23 digit separator, not C11, and the compiler rejected
-  it; the literal is now written without separators.
-
-### FACT — the C build boots, and prints the same banner
-
-```
-$ cd riscv64 && make build && make verify
-  -smp 1 : BOOT, banner x1
-  -smp 2 : BOOT, banner x1
-  -smp 3 : BOOT, banner x1
-  -smp 4 : BOOT, banner x1
-```
-
-`make verify` boots the image at each hart count and requires the milestone
-banner exactly once per run; more than once would mean the secondary harts
-were not parked.
-
-Comparing the console capture of the C build against the capture of the
-previous implementation of the same milestone, the banner text is identical
-line for line. The two captures differ in exactly one respect: the previous
-one contained two stray `0x02` bytes between OpenSBI's banner and the
-kernel's first line, the C build contains none.
-
-That difference was not left as a coincidence, it was reproduced. The previous
-driver's `init()` used a constant named `REG_LSR` — offset 5, the read-only
-Line Status Register — where the Line **Control** Register (offset 3) belongs.
-`DLAB` was therefore never set, so the two writes of the divisor value (2) went
-into the Transmit Holding Register and were **transmitted**. Rebuilding the
-C driver with the old register order reproduces the stray bytes:
-
-```
-old buggy init       bytes before banner: b'4b509\r\n\x02'   0x02 before banner: 1
-new correct init     bytes before banner: b'f4b509\r\n'        0x02 before banner: 0
-```
-
-The C driver programs the divisor the right way: set `LCR.DLAB`, write
-`DLL`/`DLM`, then set `LCR` to 8N1. This is a **deliberate deviation** from
-the previous implementation, and the only behavioural one.
-
 ### PLAUSIBLE HYPOTHESIS — not established, recorded not worked around
 
-- The SBI base-extension calls return 0 (`sbi_get_spec_version` against a
-  firmware that reports `Runtime SBI Version : 2.0`, `sbi_get_impl_id`, and
-  `legacy_putch` reporting success while the `!` never appears). The
-  disassembly shows spec-conformant calls (`li a7,16` with `li a6,0` or `1`
-  and a single `ecall`), so the calling convention is not the cause; the
-  cause is not diagnosed. The C port reproduces the previous behaviour
-  exactly here, so it is not a regression of the conversion. Consequently the
-  skeleton's own string "SBI legacy_putc works: yes" is a claim the capture
-  does not corroborate.
-- There is no trap handler: `stvec` is never programmed, so an exception in
-  S-mode is fatal and silent. A trap therefore looks exactly like a hang,
-  which is the same failure mode that cost the most time in this pass. Not
-  fixed here, because it does not block the bring-up.
+- The excess of roughly 1 per cent on the tick interval is attributed to the
+  handler latency, on the grounds that the rearm is computed from the time
+  read at the top of the handler. This was not measured directly, and a
+  competing explanation — that the timebase is not exactly 10 MHz — is not
+  excluded by the data.
+- `SBI wall clock 0` is consistent with the board having no real-time clock
+  and the firmware starting its wall clock at the epoch. It was not
+  established.
 
 ### SPECULATION
 
-Nothing is claimed about whether the rest of the boot chain (device tree,
-CLINT timer, PLIC, S-mode page tables) will work. None of it has been written.
+Nothing is claimed about the device tree, the CLINT, the PLIC, S-mode page
+tables, or multi-hart behaviour. None of it is written: only the boot hart
+runs, because the firmware holds the others.
 
 ## Disk safety (permanent rules)
 

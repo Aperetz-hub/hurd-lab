@@ -33,6 +33,9 @@ void console_puts(const char *s);
 /* Render a 64-bit value in decimal, no allocation. */
 void console_putdec(uint64_t value);
 
+/* Render a 64-bit value in signed decimal, no allocation. */
+void console_putdec_signed(int64_t value);
+
 /* Render a 64-bit value in hexadecimal, 0x-prefixed, no leading zeros. */
 void console_puthex(uint64_t value);
 
