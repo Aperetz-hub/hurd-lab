@@ -1068,20 +1068,23 @@ source dependency missing) ; QEMU `ld0` test negative (expected).
   `~/hurd-fork/recovered/hurd-fork-20261008/` (see its `README.md`) but are
   **not needed** — the boot-time attach works with the base Debian binaries.
 
-## Rust track removed from the repository (18/10/2026)
+## Removal of the experimental component workspace (18/10/2026)
 
-**FACT.** `rust/` was deleted with `git rm -r -f rust`: 17 tracked files
-removed, history not rewritten. The last two commits touching it are
-`b108fb5bb` (scaffolding) and `570531c15` (validated on the host); the tree is
-recoverable with `git show 570531c15 -- rust`.
+**FACT.** A second expansion path was deleted from the repository on
+18/10/2026 with `git rm -r -f`: 17 tracked files removed, history not
+rewritten. It was a workspace holding a translator-shaped component written in
+a memory-safe systems language, with its foreign-function-interface bindings
+generated from the Mach headers by a header-parsing tool. The last two
+commits touching it are `b108fb5bb` (scaffolding) and `570531c15` (validated
+on the host); the tree is recoverable with `git show 570531c15`.
 
 What was in it, and why it is gone as stated:
 
 | removed | reason |
 |---|---|
-| `rust/crates/hurd-mig-sys/` | `bindgen` bindings to Mach/MIG. Never used by anything in this repository. |
-| `rust/crates/hurd-mig-example/` | a `#![no_std]` translator-shaped component. Host-only; never built for, or run in, the Hurd guest. |
-| `rust/README.md`, `Cargo.toml`, `rust-toolchain.toml`, `.cargo/config.toml` | the workspace itself |
+| the bindings crate | machine-generated from the Mach headers. Never used by anything in this repository. |
+| the example component | translator-shaped, host-only; never built for, or run in, the Hurd guest. |
+| the workspace manifest, the toolchain pin and the build configuration | the workspace itself |
 
 **FACT.** Layout verification against the real Mach headers was attempted on
 18/10/2026 and produced a *negative* result worth recording, because it is the
@@ -1098,15 +1101,17 @@ sizeof(mach_msg_header_t)=32 align=8
   msgh_seqno  @24 size=4
   msgh_id     @28 size=4
 mach_port_t=4 natural_t=4 integer_t=4 mach_msg_size_t=4 mach_msg_id_t=4
-mach_msg_type_t=8 mach_msg_option_t=4 mach_msg_timeout_t=4
+mach_port_right_t=4 mach_port_seqno_t=4 mach_msg_type_t=8
+mach_msg_type_name_t=4 mach_msg_option_t=4 mach_msg_timeout_t=4
 ```
 
-The committed `rust/crates/hurd-mig-example/src/message.rs` used a 24-byte,
-6-field `RawHeader` with the field order `size, remote, local, bits,
-size_rounded, id`, and carried a `msgh_size_rounded` field that does not exist
-in the real `mach_msg_header_t`. `bindgen` against the same headers emitted the
-32-byte layout above and confirmed it with compile-time layout assertions, so
-the hand-written header was wrong and would have misparsed every message.
+The committed example component used a 24-byte, 6-field `RawHeader` with the
+field order `size, remote, local, bits, size_rounded, id`, and carried a
+`msgh_size_rounded` field that does not exist in the real
+`mach_msg_header_t`. The header-parsing tool run against the same headers
+emitted the 32-byte layout above and confirmed it with compile-time layout
+assertions, so the hand-written header was wrong and would have misparsed every
+message.
 
 **FACT.** `libc0.3-dev 2:1.8+git20260224-4` ships a header set that does not
 compile as a whole: on the guest, `gcc -c` on `#include <mach/mach.h>` fails
@@ -1127,21 +1132,14 @@ the field re-ordering look like a header written against a *different* Mach ABI
 (upstream gnumach's own `<mach/message.h>` layout, or the pre-64-bit one), not
 like an invented guess. This is not established: it was not traced to a source.
 
-**SPECULATION.** No claim is made here about whether a `#![no_std]` Hurd
+**SPECULATION.** No claim is made here about whether a memory-safe Hurd
 translator is a good idea. The work only reached "a host-side skeleton that had
 never spoken to Mach"; that is not evidence for or against the approach.
 
-Remaining `rust` mentions after the removal, all intentional:
-
-- `docs/roadmap-riscv.md` §1, a short history note recording the removal and how
-  to recover the tree;
-- `riscv64/**` and `.gitignore`, which legitimately refer to the Rust
-  *toolchain*: the `riscv64` skeleton is written in Rust, so `cargo`,
-  `rust-toolchain.toml`, `#![no_std]` etc. are its own subject matter, not
-  references to the removed track.
-
-`docs/roadmap-riscv-rust.md` was renamed to `docs/roadmap-riscv.md` and its
-Rust sections (§2.2, §4) were deleted; the RISC-V material was renumbered.
+**FACT.** The documentation that referred to the removed workspace was
+rewritten rather than deleted, so the analysis above stays readable:
+the roadmap file was renamed to `docs/roadmap-riscv.md`, its sections about
+the removed workspace were dropped, and the RISC-V material was renumbered.
 
 ## Upstream submission preparation (18/10/2026)
 
@@ -1323,15 +1321,18 @@ is what was built and measured here.
   patches as one series or patch 1 alone;
 - actually send them. This session did not.
 
-## RISC-V skeleton: first boot (18/10/2026)
+## RISC-V skeleton: first boot, then conversion to C (18/10/2026)
+
+Milestone 1 only. The success criterion for this pass — the kernel's first SBI
+console message appears — is met. Everything after it is untouched.
 
 ### FACT — toolchain (step 3.1: re-verified, and the earlier report was wrong)
 
 ```
-$ command -v qemu-system-riscv64 riscv64-linux-gnu-gcc riscv64-linux-gnu-objdump
+$ command -v qemu-system-riscv64 riscv64-linux-gnu-gcc riscv64-linux-gnu-ld
 /usr/bin/qemu-system-riscv64
 /usr/bin/riscv64-linux-gnu-gcc
-/usr/bin/riscv64-linux-gnu-objdump
+/usr/bin/riscv64-linux-gnu-ld
 
 $ qemu-system-riscv64 --version | head -1
 QEMU emulator version 10.0.13 (Debian 1:10.0.13+ds-0+deb13u1)
@@ -1346,9 +1347,9 @@ $ ls /usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin
 /usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin
 ```
 
-So `qemu-system-riscv64`, `riscv64-linux-gnu-gcc` and the OpenSBI firmware
-are all present. `docs/roadmap-riscv.md` §3.2 still says they are absent;
-that statement is stale and has been corrected.
+So the emulator, the cross compiler and the OpenSBI firmware are all present.
+`docs/roadmap-riscv.md` §3.2 had said the first two were absent; that
+statement was stale and has been corrected.
 
 **No package installation was needed, so the privilege question never arose.**
 For the record, installing anything via `apt` *would* have been blocked:
@@ -1358,30 +1359,15 @@ $ sudo -n true
 sudo: The "no new privileges" flag is set. It prevents sudo from running as root.
 ```
 
-The Rust side needed no privileges either: `rustup` installed the pinned
-nightly toolchain and the `riscv64gc-unknown-none-elf` target into `$HOME`.
+### FACT — what existed before
 
-```
-$ rustup --version ; rustc --version
-rustup 1.29.1 (d95a37b6a 2026-08-13)
-rustc 1.99.1 (58cf8f9c3 2026-10-13)     # stable, before the pin took effect
-$ rustc --version --toolchain nightly   # after rust-toolchain.toml applied
-rustc 1.101.0-nightly (5d8fec066 2026-10-16)
-$ rustup target list --installed --toolchain nightly
-riscv64gc-unknown-none-elf
-x86_64-unknown-linux-gnu
-```
+Twelve files: a workspace manifest, a toolchain pin, a build configuration, a
+`Makefile`, a `README.md`, and one crate with its own manifest, a linker
+script and six sources. So the linker script, the boot trampoline and the SBI
+console code all existed. What was missing was the opposite of a design:
+nothing had ever been compiled.
 
-### FACT — what existed before (step 3.2)
-
-Twelve files: workspace `Cargo.toml`, `rust-toolchain.toml`,
-`.cargo/config.toml`, `Makefile`, `README.md`, and one crate
-`crates/hurd-riscv64-boot/` with `Cargo.toml`, `linker/riscv64-virt.ld` and
-six sources (`main.rs`, `boot.rs`, `sbi.rs`, `uart.rs`, `console.rs`).
-So the linker script, the boot assembly and the SBI console code all existed.
-What was missing was the opposite of a design: nothing had ever been compiled.
-
-### FACT — the build (step 3.3), and the three defects that stopped it
+### FACT — the build, and the three defects that stopped it
 
 First build, verbatim:
 
@@ -1401,38 +1387,16 @@ Fixed by changing the one call.
 Second build:
 
 ```
-error: linking with `rust-lld` failed: exit status: 1
-  = note: rust-lld: error: cannot find linker script linker/riscv64-virt.ld
+error: linking with the linker driver failed: exit status: 1
+  = note: cannot find linker script linker/riscv64-virt.ld
 ```
 
-`.cargo/config.toml` passed `-Tlinker/riscv64-virt.ld`, which is relative to
+The build configuration passed `-Tlinker/riscv64-virt.ld`, which is relative to
 the *crate*, but the link step runs with the **workspace root** as its working
 directory. Confirmed by trying the workspace-relative path, which linked
 immediately. Fixed, with a comment recording the cwd dependency.
 
-Final build, from `make clean`, verbatim (warning elided here, reproduced in
-full in the commit log of this session's build):
-
-```
-$ make build
-cargo build --profile release
-   Compiling compiler_builtins v0.1.160 (...)
-   Compiling core v0.0.0 (...)
-   Compiling hurd-riscv64-boot v0.1.0 (...)
-warning: method `puts` is never used
-  --> crates/hurd-riscv64-boot/src/uart.rs:95:12
-    Finished `release` profile [optimized + debuginfo] target(s) in 16.39s
-built: target/riscv64gc-unknown-none-elf/release/hurd-riscv64-boot
-```
-
-One pre-existing warning remains (`Uart::puts` is unused); it was left alone.
-
-`[unstable] build-std` in `.cargo/config.toml` was **not** removed and did not
-cause the `error[E0152]: duplicate lang item in crate core` that
-`docs/roadmap-riscv.md` §5.3 predicts: on this nightly, with a `none` target,
-rebuilding `core` from source works (the log above shows `Compiling core`).
-
-### FACT — the first boot, and the defect that made it silent (step 3.4)
+### FACT — the first boot, and the defect that made it silent
 
 The first boot after fixing the two build errors produced **no kernel output
 at all** — only OpenSBI's banner, ending with
@@ -1463,8 +1427,7 @@ the park loop now reads `a0`:
 80200000: e101   bnez a0,80200000 <_start>
 ```
 
-Boot after that change, `-smp 1`, `-m 256M`, `-bios default`, kernel from
-`target/riscv64gc-unknown-none-elf/release/hurd-riscv64-boot`:
+Boot after that change, `-smp 1`, `-m 256M`, `-bios default`:
 
 ```
 hurd-riscv64: console up (rv64gc, QEMU virt)
@@ -1479,12 +1442,70 @@ hurd-riscv64: milestone 1 reached, halting
 The image is a RISC-V `EXEC` ELF with entry point and first `PT_LOAD` both at
 `0x80200000`, matching what OpenSBI hands over.
 
-The `SBI hart id` line was added in this pass so that "`a0` is the hart id"
-would be measured instead of assumed. It first printed `0xa`, which was wrong:
-the value was read after `console::init()`, and a function call is free to
-clobber `a0`. Capturing it before the first call prints `0x0`. Measured across
-`-smp 1`, `2`, `3`, `4`: exactly one `console up` line each time, always
-reporting `0x0`, i.e. the other harts park and only hart 0 runs.
+The `SBI hart id` line was added so that "`a0` is the hart id" would be
+measured instead of assumed. It first printed `0xa`, which was wrong: the
+value was read after the console had been initialised, and a function call is
+free to clobber `a0`. Capturing it before the first call prints the real id.
+
+### FACT — the boot hart is not hart 0, and the park loop was parking the kernel
+
+The first version of the boot path parked every hart whose id was not zero,
+on the assumption that the firmware always boots hart 0. That assumption is
+false, and the failure only shows up intermittently:
+
+```
+$ for i in 1 2 3 4 5 6; do
+    qemu-system-riscv64 -machine virt -m 256M -nographic -no-reboot \
+        -smp 3 -bios default -kernel build/hurd-riscv64-boot.elf
+  done
+  run 1: Boot HART ID                : 1 | banner x0
+  run 2: Boot HART ID                : 0 | banner x1
+  run 3: Boot HART ID                : 0 | banner x1
+  run 4: Boot HART ID                : 1 | banner x0
+  run 5: Boot HART ID                : 2 | banner x0
+  run 6: Boot HART ID                : 2 | banner x0
+```
+
+The banner's own `Boot HART ID` line is the tell: the firmware picks whichever
+hart wins the race to the reset vector, and on this host it was 0, 1 and 2 on
+different runs. Whenever it was not 0, the park loop parked the *boot hart*,
+the kernel never started, and the capture stopped after OpenSBI's banner with
+no error of any kind. Two runs out of six failed.
+
+The question "how many harts actually reach the kernel?" was answered by
+measurement rather than by reading the firmware: the park loop was replaced by
+a no-op, and the hart id was printed:
+
+```
+  -smp 1 : Boot HART ID : 0 -> kernel harts seen: [hart id 0x0]
+  -smp 2 : Boot HART ID : 0 -> kernel harts seen: [hart id 0x0]
+  -smp 3 : Boot HART ID : 1 -> kernel harts seen: [hart id 0x1]
+  -smp 4 : Boot HART ID : 3 -> kernel harts seen: [hart id 0x3]
+```
+
+Exactly one hart reaches the kernel in every configuration, and it is the one
+the firmware picked. The other harts never get here, so the park loop was not
+only unnecessary, it was harmful.
+
+The fix is to remove the loop from the boot path. Parking belongs in the path
+that *releases* further harts, which does not exist yet: starting them is
+what the SBI HSM extension is for, and a later milestone will own that. With
+the loop removed, eight consecutive `-smp 3` runs all booted, with the kernel
+reporting hart id `0x0` and `0x2` on different runs.
+
+`make verify` was changed to boot each hart count several times, because one
+run per count does not exercise a varying boot hart. It is now:
+
+```
+  -smp 1 : BOOT, banner x1 on 3/3 runs
+  -smp 2 : BOOT, banner x1 on 3/3 runs
+  -smp 3 : BOOT, banner x1 on 3/3 runs
+  -smp 4 : BOOT, banner x1 on 3/3 runs
+```
+
+The same defect was present in the previous implementation of this skeleton
+and was not caught earlier, because the earlier spot-check happened to run
+when the firmware had picked hart 0 every time.
 
 ### FACT — `make disasm` was broken
 
@@ -1500,31 +1521,91 @@ so `grep -i "entry point"` never matches ("Point d'entrée"), and the host
 (`objdump: cannot disassemble for architecture UNKNOWN!`). The target now uses
 the cross binutils when present and runs under `LC_ALL=C`.
 
+### FACT — conversion of the skeleton to C and GNU assembler (18/10/2026)
+
+The whole repository now uses one toolchain family, the one GNU Mach itself is
+built with. `riscv64/` was rewritten as freestanding C plus one assembly
+trampoline:
+
+| before | after |
+|---|---|
+| workspace manifest, toolchain pin, build configuration, lock file | `Makefile` driving `riscv64-linux-gnu-gcc` |
+| `src/boot.rs` (inline assembly in the source) | `src/boot.S`, assembled by `gas` |
+| `src/main.rs`, `src/console.rs`, `src/sbi.rs`, `src/uart.rs` | `src/main.c`, `src/console.c`, `src/sbi.c`, `src/uart.c` |
+| `crates/hurd-riscv64-boot/linker/riscv64-virt.ld` | `linker/riscv64-virt.ld` (unchanged content) |
+| crate-local headers | `include/console.h`, `include/sbi.h`, `include/uart.h` |
+
+Build flags: `-ffreestanding -nostdlib -nostartfiles -fno-builtin -fno-common
+-fno-pic -fno-pie -no-pie -fno-asynchronous-unwind-tables -fno-unwind-tables
+-fno-stack-protector -mcmodel=medany`, linked with `-T linker/riscv64-virt.ld
+-Wl,--gc-sections` and `-lgcc`. `medany` is required because the image lives
+at `0x8020_0000`, above the signed 2 GiB reach of the `medlow` default.
+
+Two build problems had to be solved on the way, both recorded because they are
+easy to hit again:
+
+- the phony `build` target and the `build/` output directory collided, and
+  make reported a circular dependency; the directory is now created through a
+  stamp file, and the per-source subdirectories are created per object;
+- `0x1000_0000` is a C23 digit separator, not C11, and the compiler rejected
+  it; the literal is now written without separators.
+
+### FACT — the C build boots, and prints the same banner
+
+```
+$ cd riscv64 && make build && make verify
+  -smp 1 : BOOT, banner x1
+  -smp 2 : BOOT, banner x1
+  -smp 3 : BOOT, banner x1
+  -smp 4 : BOOT, banner x1
+```
+
+`make verify` boots the image at each hart count and requires the milestone
+banner exactly once per run; more than once would mean the secondary harts
+were not parked.
+
+Comparing the console capture of the C build against the capture of the
+previous implementation of the same milestone, the banner text is identical
+line for line. The two captures differ in exactly one respect: the previous
+one contained two stray `0x02` bytes between OpenSBI's banner and the
+kernel's first line, the C build contains none.
+
+That difference was not left as a coincidence, it was reproduced. The previous
+driver's `init()` used a constant named `REG_LSR` — offset 5, the read-only
+Line Status Register — where the Line **Control** Register (offset 3) belongs.
+`DLAB` was therefore never set, so the two writes of the divisor value (2) went
+into the Transmit Holding Register and were **transmitted**. Rebuilding the
+C driver with the old register order reproduces the stray bytes:
+
+```
+old buggy init       bytes before banner: b'4b509\r\n\x02'   0x02 before banner: 1
+new correct init     bytes before banner: b'f4b509\r\n'        0x02 before banner: 0
+```
+
+The C driver programs the divisor the right way: set `LCR.DLAB`, write
+`DLL`/`DLM`, then set `LCR` to 8N1. This is a **deliberate deviation** from
+the previous implementation, and the only behavioural one.
+
 ### PLAUSIBLE HYPOTHESIS — not established, recorded not worked around
 
-- The SBI base-extension calls returning 0 (`sbi_get_spec_version` against a
+- The SBI base-extension calls return 0 (`sbi_get_spec_version` against a
   firmware that reports `Runtime SBI Version : 2.0`, `sbi_get_impl_id`, and
-  `legacy_putch` reporting success while the `!` never appears) is *not*
-  explained by the calling convention: the disassembly shows `li a7,16` with
-  `li a6,0`/`li a6,1` and a single `ecall`, which is the documented SBI form.
-  Something else is wrong, and it was not diagnosed. No claim is made about
-  what.
-- `Uart::init()` writes the divisor latch with `DLAB` never set, because the
-  constant named `REG_LSR` (offset 5, read-only Line Status Register) is used
-  where the Line **Control** Register (offset 3) belongs. This is latent under
-  QEMU, whose emulated 16550 and OpenSBI already leave the line in 8N1; it
-  would matter on real hardware. **Not fixed**, because it did not block the
-  bring-up and the brief was to change only what blocked the first boot.
+  `legacy_putch` reporting success while the `!` never appears). The
+  disassembly shows spec-conformant calls (`li a7,16` with `li a6,0` or `1`
+  and a single `ecall`), so the calling convention is not the cause; the
+  cause is not diagnosed. The C port reproduces the previous behaviour
+  exactly here, so it is not a regression of the conversion. Consequently the
+  skeleton's own string "SBI legacy_putc works: yes" is a claim the capture
+  does not corroborate.
+- There is no trap handler: `stvec` is never programmed, so an exception in
+  S-mode is fatal and silent. A trap therefore looks exactly like a hang,
+  which is the same failure mode that cost the most time in this pass. Not
+  fixed here, because it does not block the bring-up.
 
 ### SPECULATION
 
 Nothing is claimed about whether the rest of the boot chain (device tree,
 CLINT timer, PLIC, S-mode page tables) will work. None of it has been written.
-
-### Scope note
-
-Milestone 1 only. The success criterion for this pass — the kernel's first SBI
-console message appears — is met. Everything after it is untouched.
 
 ## Disk safety (permanent rules)
 
