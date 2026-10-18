@@ -8,7 +8,7 @@ a foundation that is known to reach `main`.
 
 > Status: **blueprint**. It has not been compiled on the reference host; the
 > toolchain it needs is not installed there yet. See
-> `docs/roadmap-riscv-rust.md` for the exact setup, and treat "it builds" as a
+> `docs/roadmap-riscv.md` for the exact setup, and treat "it builds" as a
 > to-do rather than a claim.
 
 ## What is in here
@@ -133,8 +133,8 @@ Deliberately ordered so that each one is independently checkable:
 4. **Physical memory** — PLIC, UART interrupt driven, page tables, and the
    first allocator. This is the point where `-Z build-std=core,alloc` becomes
    necessary rather than optional.
-5. **Mach-shaped core** — threads, ports, the IPC path. At this point
-   `hurd-mig-sys` from `rust/` becomes useful, and the two tracks meet.
+5. **Mach-shaped core** — threads, ports, the IPC path. This is where the
+   skeleton stops being a boot exercise and starts being a kernel.
 
 Milestones 3–5 are where the hard parts live, and where the lessons from the
 x86-64 SMP investigation should be applied deliberately rather than

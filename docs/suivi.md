@@ -1001,6 +1001,81 @@ source dependency missing) ; QEMU `ld0` test negative (expected).
   `~/hurd-fork/recovered/hurd-fork-20261008/` (see its `README.md`) but are
   **not needed** — the boot-time attach works with the base Debian binaries.
 
+## Rust track removed from the repository (18/10/2026)
+
+**FACT.** `rust/` was deleted with `git rm -r -f rust`: 17 tracked files
+removed, history not rewritten. The last two commits touching it are
+`b108fb5bb` (scaffolding) and `570531c15` (validated on the host); the tree is
+recoverable with `git show 570531c15 -- rust`.
+
+What was in it, and why it is gone as stated:
+
+| removed | reason |
+|---|---|
+| `rust/crates/hurd-mig-sys/` | `bindgen` bindings to Mach/MIG. Never used by anything in this repository. |
+| `rust/crates/hurd-mig-example/` | a `#![no_std]` translator-shaped component. Host-only; never built for, or run in, the Hurd guest. |
+| `rust/README.md`, `Cargo.toml`, `rust-toolchain.toml`, `.cargo/config.toml` | the workspace itself |
+
+**FACT.** Layout verification against the real Mach headers was attempted on
+18/10/2026 and produced a *negative* result worth recording, because it is the
+reason the track is not worth carrying. Measured in the guest (Debian GNU/Hurd,
+`libc0.3-dev 2:1.8+git20260224-4`, `gcc` on the guest) with
+`printf '#include <mach/message.h>...' && gcc -o /tmp/sz /tmp/sz.c && /tmp/sz`:
+
+```
+sizeof(mach_msg_header_t)=32 align=8
+  msgh_bits   @0  size=4
+  msgh_size   @4  size=4
+  msgh_remote @8  size=4
+  msgh_local  @16 size=4
+  msgh_seqno  @24 size=4
+  msgh_id     @28 size=4
+mach_port_t=4 natural_t=4 integer_t=4 mach_msg_size_t=4 mach_msg_id_t=4
+mach_msg_type_t=8 mach_msg_option_t=4 mach_msg_timeout_t=4
+```
+
+The committed `rust/crates/hurd-mig-example/src/message.rs` used a 24-byte,
+6-field `RawHeader` with the field order `size, remote, local, bits,
+size_rounded, id`, and carried a `msgh_size_rounded` field that does not exist
+in the real `mach_msg_header_t`. `bindgen` against the same headers emitted the
+32-byte layout above and confirmed it with compile-time layout assertions, so
+the hand-written header was wrong and would have misparsed every message.
+
+**FACT.** `libc0.3-dev 2:1.8+git20260224-4` ships a header set that does not
+compile as a whole: on the guest, `gcc -c` on `#include <mach/mach.h>` fails
+with
+
+```
+/usr/include/mach/mach_host.h:538:9: error: unknown type name
+'processor_name_array_t'; did you mean 'processor_set_name_array_t'?
+```
+
+(the same failure is produced by clang on the host against the extracted
+headers). `<mach/message.h>`, `<mach/mach_types.h>`, `<mach/port.h>`,
+`<mach/kern_return.h>`, `<mach/mach_traps.h>` and `<mach/mig_errors.h>` each
+compile standalone in the guest.
+
+**PLAUSIBLE HYPOTHESIS.** The `msgh_size_rounded` field, the 24-byte header and
+the field re-ordering look like a header written against a *different* Mach ABI
+(upstream gnumach's own `<mach/message.h>` layout, or the pre-64-bit one), not
+like an invented guess. This is not established: it was not traced to a source.
+
+**SPECULATION.** No claim is made here about whether a `#![no_std]` Hurd
+translator is a good idea. The work only reached "a host-side skeleton that had
+never spoken to Mach"; that is not evidence for or against the approach.
+
+Remaining `rust` mentions after the removal, all intentional:
+
+- `docs/roadmap-riscv.md` §1, a short history note recording the removal and how
+  to recover the tree;
+- `riscv64/**` and `.gitignore`, which legitimately refer to the Rust
+  *toolchain*: the `riscv64` skeleton is written in Rust, so `cargo`,
+  `rust-toolchain.toml`, `#![no_std]` etc. are its own subject matter, not
+  references to the removed track.
+
+`docs/roadmap-riscv-rust.md` was renamed to `docs/roadmap-riscv.md` and its
+Rust sections (§2.2, §4) were deleted; the RISC-V material was renumbered.
+
 ## Disk safety (permanent rules)
 
 - **Never** boot `debian-hurd-amd64-*.img` in write mode.

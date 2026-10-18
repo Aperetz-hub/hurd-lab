@@ -7,6 +7,6 @@
 *.ppm
 *.out
 
-# Cargo build output for the experimental Rust / RISC-V workspaces.
+# Cargo build output of the riscv64/ workspace.
 target/
 **/target/

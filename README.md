@@ -60,11 +60,8 @@ messages.
   `interfaces.vioif`, `net-switch-vioif.sh`.
 - `riscv64/` — **experimental**: bare-metal `rv64gc` kernel skeleton for the
   QEMU `virt` board (OpenSBI + SBI console). Blueprint; not built yet.
-- `rust/` — **experimental**: Cargo workspace for `#![no_std]` Rust components
-  talking to Mach/MIG (`hurd-mig-sys` + `hurd-mig-example`). Blueprint; not
-  built yet.
-- `docs/` — follow-up notes (`suivi.md`), plus
-  `roadmap-riscv-rust.md` for the two experimental tracks above.
+- `docs/` — follow-up notes (`suivi.md`), plus `roadmap-riscv.md` for the
+  experimental `riscv64/` track above.
 
 ## Published branches
 
