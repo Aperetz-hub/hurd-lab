@@ -1321,94 +1321,107 @@ is what was built and measured here.
   patches as one series or patch 1 alone;
 - actually send them. This session did not.
 
-## RISC-V skeleton: first boot, conversion to C, then milestone 2 (18/10/2026)
+## RISC-V skeleton: milestone 3, physical memory and the Sv39 MMU (18/10/2026)
 
-Milestone 1 and milestone 2 only. The success criterion for milestone 2 — the
-kernel installs an S-mode trap vector, takes five supervisor timer interrupts
-and reports milestone 2 — is met. Everything after it is untouched.
+Follows the milestone 1 and 2 entries above; the toolchain, the SBI
+convention and the trap vector are described there and are not repeated.
 
-### FACT — the SBI return convention, and the bug it explains
+Milestone 3 is: a physical page allocator, Sv39 page tables with per-section
+permissions, the MMU switched on, and the five supervisor timer interrupts
+still completing with the MMU live. The success criterion is met.
 
-The RISC-V SBI specification, version v3.0, section "Binary Encoding"
-(<https://docs.riscv.org/reference/sbi/v3.0/binary-encoding.html>), reads:
+### FACT — the drift-free rearm, measured against the old scheme
 
-> "SBI functions must return a pair of values in a0 and a1, with a0 returning
-> an error code. This is analogous to returning the C structure
-> `struct sbiret { long error; union { long value; unsigned long uvalue; }; }`"
+The old rearm scheduled the next interrupt as `rdtime() + interval`, so every
+tick was late by however long the handler took, and the lateness accumulated.
+The new rearm advances the deadline by exactly one interval:
 
-and the base extension page
-(<https://docs.riscv.org/reference/sbi/ext-base.html>) gives the same
-signature, `struct sbiret sbi_get_spec_version(void);`.
-
-The skeleton had been reading `a0` only, so every base-extension call
-reported "0". With both registers read, the same calls answer:
-
-```
-SBI spec version 2.0 (error 0, value 0x2000000)
-SBI impl id 0x1 (error 0)
-SBI impl version 0x10006 (error 0)
+```c
+if (next_deadline + interval <= now)
+        next_deadline = now + interval;   /* fell too far behind */
+else
+        next_deadline += interval;
 ```
 
-`include/sbi.h` now returns `struct sbiret { long error; long value; }` and
-the boot log prints both parts, so a future mismatch is visible instead of
-silent.
+Both schemes were built from the same tree and measured the same way: the
+average period over the five ticks, with an interval of 100000 ticks.
 
-**FACT.** The same mistake explained the second anomaly, the legacy console.
-The old code addressed it as if it were a base-extension call (`a7` = 0x10,
-`a6` = 0x00), which is `sbi_get_spec_version`: the character was never sent,
-and the call "succeeded" because the error code of a *different* function was
-zero. The legacy extensions have their own convention — the specification
-says "nothing is returned in a1" and "the value returned in a0 register is SBI
-legacy extension specific" — so they now have their own wrapper, with
-`a7` = 0x01. The `!` that the old code asked for now appears in the console
-for the first time.
+| scheme | average period over 5 ticks, three runs |
+|---|---|
+| `now + interval` (old, drifting) | 100989, 100824, 101046 — always *above* the target |
+| `next_deadline += interval` (new) | 99214, 99226, 99730 — at or below, converging to it |
 
-**FACT.** The firmware does not implement two of the SBI TIME functions the
-kernel asked for, and says so: `sbi_timer_set_stimecmp` and
-`sbi_timer_timebase` both return -2 (`SBI_ERR_NOT_SUPPORTED`). The extension
-itself is present: `sbi_probe_extension(0x54494d45)` returns 1.
+The boot log also prints the offset of the deadline schedule, which shows
+the schedule itself is exact: the offsets advance by exactly 100000 every
+tick (`+96360`, `+196360`, `+296360`, `+396360`). The constant part is the
+lateness of the first tick, which is large because the MMU switch-on
+happens between the arming and the first interrupt.
 
-### FACT — the S-mode trap vector
+### FACT — the physical page allocator
 
-`src/trap.S` is installed in `stvec` in direct mode, saves the interrupted
-context on the interrupted stack, calls the C handler with a pointer to the
-frame, restores everything and returns with `sret`.
+`src/pmm.c` hands out 4 KiB pages from a fixed pool of 64 pages that the
+linker script reserves between `_kernel_end` and `_pmm_pool_end`. Every page
+is handed out 4 KiB aligned and zeroed.
 
-The frame layout lives in `include/trap_offsets.h` and is used by *both* the
-assembly and the C struct in `include/trap.h`, which then checks every member
-offset with `_Static_assert`. The first build of that header failed its own
-assertion — the struct was 280 bytes and the assembly allocated 288 — which
-is the check doing its job.
-
-**FACT.** Two properties of this platform decide how the vector may be
-installed, and both were measured rather than assumed.
-
-- The `ecall` from S-mode is **not** delegated to S-mode. The firmware reports
-  `Boot HART MEDELEG : 0x0000000000f4b509`, and decoding it shows bit 9
-  (environment call from S-mode) clear, while bits 0, 3, 8, 10, 12, 13, 15,
-  18 and 20 to 23 are set. The SBI `ecall` therefore traps straight to M-mode
-  and never touches the S-mode `stvec`, so installing our own vector does not
-  break the SBI path.
-- The firmware's own `stvec` was `0x80200000`, which is `_start`: a trap
-  taken before our vector is installed would have jumped back to the entry
-  point. The kernel now prints the old value before overwriting it.
-
-**FACT.** `menvcfg` and `mideleg` are machine-mode CSRs and cannot be read
-from S-mode. The first version of the timer code read `menvcfg` to check
-`STCE`, and the very first trap was the consequence:
+The kernel takes one page and hands it straight back, and says so:
 
 ```
-trap: exception cause=0x2 code=0x2 sepc=0x8020083c stval=0x30a02573
+pmm: pool 64 pages of 4 KiB
+pmm: allocated page at 0x80214000, aligned=0x1, free now 63
 ```
 
-`stval` decodes as `csrr t3, menvcfg`, i.e. the read of a machine-mode CSR
-from S-mode, which raises an illegal instruction. The reads were removed; the
-delegation state is now established by its effect, namely whether the tick
-arrives.
+The pool size is fixed in two places — `PMM_POOL_PAGES` in `include/pmm.h`
+and `PMM_POOL_PAGES` in the linker script — so it cannot be checked with a
+`_Static_assert`: the linker symbols are not constant expressions in C. The
+kernel therefore reports the size the script actually reserved, and a
+mismatch is visible at boot.
 
-### FACT — the timer, and the exception path, measured
+### FACT — the Sv39 page tables and the MMU
 
-Boot on QEMU 10.0.13 `virt`, `-m 256M`, `-bios default`:
+The linker script now pads the section boundaries to 4 KiB page boundaries,
+which is what makes strict per-section permissions possible:
+
+```
+$ riscv64-linux-gnu-nm build/hurd-riscv64-boot.elf | grep -E '__text_start|__text_end|__rodata_start|__rodata_end|__data_start|_kernel_end|_pmm_pool_end'
+0000000080200000 T __text_start
+0000000080202000 R __rodata_end
+0000000080202000 R __rodata_start
+0000000080202000 R __text_end
+0000000080203000 D __data_start
+0000000080203000 D __rodata_end
+0000000080214000 B __stack_top
+0000000080214000 B _kernel_end
+0000000080254000 B _pmm_pool_end
+```
+
+`src/vm.c` builds a three-level Sv39 table and switches the MMU on with
+`satp = (8 << 60) | root_ppn` followed by `sfence.vma`:
+
+```
+vm: root table ppn 0x80215, 85 pages mapped, 5 pool pages used
+vm: Sv39 active, satp 0x8000000000080215
+```
+
+The mapping is an identity mapping, because the kernel keeps running at its
+physical address; what the tables buy is permissions:
+
+| region | permissions |
+|---|---|
+| `[__text_start, __text_end)` | `R-X` |
+| `[__rodata_start, __rodata_end)` | `R--` |
+| `[__data_start, _kernel_end)` | `RW-` |
+| `[_kernel_end, _pmm_pool_end)` | `RW-` |
+| `[0x1000_0000, 0x1000_1000)`, the UART | `RW-` |
+
+**FACT.** `.data` and `.bss` are deliberately not separated by a page gap.
+They hold the small-data objects that the RISC-V `gp` convention addresses
+relative to `__global_pointer$`, and keeping them adjacent preserves that.
+The assembler resolves the distance and refuses to relax an access that does
+not fit, so a mistake there is a link error rather than a wrong address.
+
+### FACT — the whole milestone-3 boot
+
+QEMU 10.0.13 `virt`, `-m 256M`, `-bios default`:
 
 ```
 hurd-riscv64: console up (rv64gc, QEMU virt)
@@ -1422,40 +1435,50 @@ SBI extension probe base eid 0x10 -> 1 (error 0)
 SBI extension probe legacy console eid 0x1 -> 1 (error 0)
 SBI extension probe time eid 0x54494d45 -> 1 (error 0)
 SBI wall clock 0 (error 0)
-SBI timebase 0 (error -2)
 hurd-riscv64: milestone 1 reached
+pmm: pool 64 pages of 4 KiB
+pmm: allocated page at 0x80214000, aligned=0x1, free now 63
 firmware stvec was 0x80200000
-installed stvec 0x802009c0
-timer armed by stimecmp CSR at 1270504 (SBI sbi_timer_set_stimecmp error -2)
-timer tick 1 at 1273996
-timer tick 2 at 1375252 (interval 101256 ticks)
-timer tick 3 at 1476729
-timer tick 4 at 1579142
-timer tick 5 at 1680002
-hurd-riscv64: milestone 2 reached, halting
+installed stvec 0x80201d20
+hurd-riscv64: milestone 2 reached
+timer armed by stimecmp CSR at 911911 (SBI sbi_timer_set_stimecmp error -2)
+vm: root table ppn 0x80215, 85 pages mapped, 5 pool pages used
+vm: Sv39 active, satp 0x8000000000080215
+timer tick 1 at 915551
+timer tick 2 at 1012955 (period 97404 ticks, deadline +96360)
+timer tick 3 at 1112692 (period 98570 ticks, deadline +196360)
+timer tick 4 at 1215265 (period 99904 ticks, deadline +296360)
+timer tick 5 at 1312438 (period 99221 ticks, deadline +396360)
+hurd-riscv64: milestone 3 reached, halting
 ```
 
-The interval is programmed as 100000 ticks, which is 10 ms on the 10 MHz
-timebase the board reports (`aclint-mtimer @ 10000000Hz`). The measured
-interval between the first two ticks, over five runs, was 100698, 100776,
-101739, 101632 and 101684 ticks. The excess of roughly 700 to 1700 ticks
-(70 to 170 microseconds) is the time between the interrupt being taken and
-the rearm write.
+The UART output and the five interrupts both complete *after* the MMU is on,
+which is the point: the identity mapping, the permissions and the explicit
+UART mapping are all exercised by the lines above.
 
-**FACT.** The exception path is checked on purpose, not by accident.
-`make selftest` builds a variant that raises a deliberate illegal instruction
-(`.word 0x00000000`) right after the vector is installed, and requires the
-handler to report it:
+### FACT — the self tests
+
+`make selftest` builds two variants and checks both fault paths.
 
 ```
-self-test: raising an illegal instruction
-trap: exception cause=0x2 code=0x2 sepc=0x802002e8 stval=0x0
-  selftest: PASS, the exception was caught and reported
+  selftest exception: PASS
+    selftest: raising an illegal instruction
+    selftest: fault as expected, cause 2, sepc 0x802012f6
+    selftest: PASS
+  selftest rodata: PASS
+    selftest: storing to .rodata at 0x80202000
+    selftest: fault as expected, cause 15, sepc 0x80201354
+    selftest: PASS
 ```
 
-**FACT.** `make verify`, which boots at `-smp` 1 to 4, three runs each, and
-requires both the milestone 1 and the milestone 2 banner exactly once per
-run:
+The second one is the one that matters for this milestone: a store to the
+read-only data raises a **store/AMO page fault, `scause = 15`**, which is
+only possible if the `R--` permission on that page is real. Had the
+permission been wrong, the store would have succeeded and the test would
+have failed by reaching the code after it.
+
+`make verify`, which boots at `-smp` 1 to 4, three runs each, and requires
+both the milestone 2 and the milestone 3 banner exactly once per run:
 
 ```
   -smp 1 : BOOT, banner x1 on 3/3 runs
@@ -1464,22 +1487,23 @@ run:
   -smp 4 : BOOT, banner x1 on 3/3 runs
 ```
 
-### PLAUSIBLE HYPOTHESIS — not established, recorded not worked around
+### PLAUSIBLE HYPOTHESIS — recorded, not relied on
 
-- The excess of roughly 1 per cent on the tick interval is attributed to the
-  handler latency, on the grounds that the rearm is computed from the time
-  read at the top of the handler. This was not measured directly, and a
-  competing explanation — that the timebase is not exactly 10 MHz — is not
-  excluded by the data.
-- `SBI wall clock 0` is consistent with the board having no real-time clock
-  and the firmware starting its wall clock at the epoch. It was not
-  established.
+- The excess of the old scheme over the 100000-tick interval is attributed
+  to the handler latency, on the grounds that the rearm was computed from
+  the time read at the top of the handler. The measurement is consistent with
+  that, but the latency itself was not measured separately.
+- The first interrupt is late by about 3640 ticks in the log above (armed at
+  911911, first interrupt at 915551). That is attributed to the MMU switch-on
+  happening between the arming and the first interrupt, since the boot log
+  shows the page table construction and the console output in between. It
+  was not measured directly, and the attribution is an explanation, not an
+  observation.
 
 ### SPECULATION
 
-Nothing is claimed about the device tree, the CLINT, the PLIC, S-mode page
-tables, or multi-hart behaviour. None of it is written: only the boot hart
-runs, because the firmware holds the others.
+Nothing is claimed about user space, about mapping the rest of DRAM, about
+the device tree, or about starting further harts. None of it is written.
 
 ## Disk safety (permanent rules)
 

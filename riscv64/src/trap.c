@@ -32,6 +32,8 @@ print_trap_context(const char *what, struct trap_frame *frame, unsigned long cod
 	console_puts("\r\n");
 }
 
+unsigned long trap_expected_cause;
+
 static void
 halt(void)
 {
@@ -66,7 +68,21 @@ trap_handler(struct trap_frame *frame)
 	 * An exception.  The kernel has no way to make progress past one, so
 	 * report it and stop; the sepc and stval are what make the report
 	 * actionable.
+	 *
+	 * The one exception is a self test that asked for a specific cause: a
+	 * page fault on a read-only page, for instance, is the expected result
+	 * and not a failure.
 	 */
+	if (trap_expected_cause != 0 && code == trap_expected_cause) {
+		console_puts("selftest: fault as expected, cause ");
+		console_putdec(code);
+		console_puts(", sepc ");
+		console_puthex(frame->sepc);
+		console_puts("\r\n");
+		console_puts("selftest: PASS\r\n");
+		halt();
+	}
+
 	print_trap_context("exception", frame, code);
 	halt();
 }

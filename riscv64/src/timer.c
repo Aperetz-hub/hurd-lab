@@ -12,6 +12,9 @@ static unsigned long tick_count;
 static unsigned long interval;
 static unsigned long first_tick_time;
 static unsigned long last_tick_time;
+static unsigned long next_deadline;
+/* The time of the first interrupt, used to measure the average period. */
+static unsigned long first_interrupt_time;
 
 static const char *armed_by;
 
@@ -42,8 +45,9 @@ timer_init(unsigned long interval_ticks)
 	 */
 	now = csr_read_time();
 	first_tick_time = now;
+	next_deadline = now + interval;
 
-	r = sbi_timer_set_stimecmp(now + interval);
+	r = sbi_timer_set_stimecmp(next_deadline);
 	if (r.error == 0) {
 		armed_by = "SBI timer extension";
 	} else {
@@ -53,7 +57,7 @@ timer_init(unsigned long interval_ticks)
 	console_puts("timer armed by ");
 	console_puts(armed_by);
 	console_puts(" at ");
-	console_putdec(now + interval);
+	console_putdec(next_deadline);
 	console_puts(" (SBI sbi_timer_set_stimecmp error ");
 	console_putdec_signed(r.error);
 	console_puts(")\r\n");
@@ -70,19 +74,48 @@ timer_on_tick(void)
 	unsigned long delta = now - last_tick_time;
 
 	tick_count++;
+	if (tick_count == 1)
+		first_interrupt_time = now;
 
-	/* Rearm for the next one. */
-	csr_write_stimecmp(now + interval);
+	/*
+	 * Rearm without drift.
+	 *
+	 * Scheduling "now + interval" would make every tick late by the time
+	 * the handler takes to run -- the UART writes and the rearm itself --
+	 * so the measured period would be the interval plus that latency, and
+	 * the error would accumulate.  Instead the deadline is advanced by
+	 * exactly one interval, so the period is the interval whatever the
+	 * handler costs.
+	 *
+	 * The only exception is when the handler took so long that the next
+	 * deadline is already in the past; then the schedule is resynchronised
+	 * on the current time instead of firing a burst of catch-up ticks.
+	 */
+	if (next_deadline + interval <= now)
+		next_deadline = now + interval;
+	else
+		next_deadline += interval;
+
+	csr_write_stimecmp(next_deadline);
 	last_tick_time = now;
 
 	console_puts("timer tick ");
 	console_putdec(tick_count);
 	console_puts(" at ");
 	console_putdec(now);
-	if (tick_count == 2) {
-		console_puts(" (interval ");
-		console_putdec(delta);
-		console_puts(" ticks)");
+	if (tick_count > 1) {
+		/*
+		 * The deadline schedule advances by exactly one interval per
+		 * tick, so it cannot drift.  The *observed* times still differ
+		 * from the deadlines by the handler latency, which varies; the
+		 * average period over the ticks so far is the number that shows
+		 * whether the error accumulates or stays bounded.
+		 */
+		console_puts(" (period ");
+		console_putdec((now - first_interrupt_time) / (tick_count - 1));
+		console_puts(" ticks, deadline +");
+		console_putdec(next_deadline - (first_interrupt_time + interval));
+		console_puts(")");
 	}
 	console_puts("\r\n");
 }

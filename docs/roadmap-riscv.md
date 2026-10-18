@@ -1,10 +1,12 @@
 # Roadmap: RISC-V port
 
 **Date:** 18/10/2026
-**Status:** milestone 2 **built and booted** — the skeleton is freestanding C
+**Status:** milestone 3 **built and booted** — the skeleton is freestanding C
 and GNU assembler, built with `riscv64-linux-gnu-gcc`, `gas`, `ld` and `make`.
-It installs an S-mode trap vector and takes supervisor timer interrupts. See
-`riscv64/README.md` for the boot log and `docs/suivi.md` for the measurements.
+It installs an S-mode trap vector, switches the MMU on in Sv39 mode with
+per-section permissions, and takes supervisor timer interrupts with the MMU
+live. See `riscv64/README.md` for the boot log and `docs/suivi.md` for the
+measurements.
 
 This document is the map for the `riscv64/` expansion path: a 64-bit RISC-V
 (`riscv64`) microkernel / boot target skeleton.
@@ -44,7 +46,7 @@ one GNU Mach itself is built with.
 | `riscv64/README.md` | the rv64gc skeleton: boot contract, console design, milestones, known defects |
 | `riscv64/Makefile` | `check` / `build` / `run` / `verify` / `selftest` / `debug` / `disasm` / `clean` |
 | `riscv64/linker/riscv64-virt.ld` | image layout for the QEMU `virt` board |
-| `riscv64/include/` | `console.h`, `csr.h`, `sbi.h`, `timer.h`, `trap.h`, `trap_offsets.h`, `uart.h` |
+| `riscv64/include/` | `console.h`, `csr.h`, `linker.h`, `pmm.h`, `sbi.h`, `timer.h`, `trap.h`, `trap_offsets.h`, `uart.h`, `vm.h` |
 | `riscv64/src/` | the kernel skeleton itself (see below) |
 
 Inside `riscv64/src`:
@@ -56,7 +58,10 @@ Inside `riscv64/src`:
 - `trap.c` — the C trap handler, and `trap_offsets.h` / `trap.h`, which share
   the frame layout and check it with `_Static_assert`.
 - `timer.c` — the S-mode timer: `rdtime` plus an interval, written to
-  `stimecmp`, plus the tick counter.
+  `stimecmp`, plus the tick counter and the drift-free rearm.
+- `pmm.c` — the 4 KiB physical page allocator over a fixed pool above the
+  kernel image.
+- `vm.c` — the Sv39 page tables and the MMU switch-on.
 - `sbi.c` — SBI `ecall` wrappers returning the `struct sbiret` pair, for the
   base and TIME extensions and for the legacy console.
 - `uart.c` — polled NS16550A driver for the QEMU `virt` board (`0x1000_0000`).
@@ -132,8 +137,9 @@ QEMU (-machine virt)
                  ├─ legacy console      extension 0x01, proves the ecall path
                  ├─ stvec = trap_entry  the S-mode trap vector
                  ├─ stimecmp = time+Δ   arm the S-mode timer
+                 ├─ satp = Sv39|root    switch the MMU on
                  └─ wfi                 wait for the timer interrupts
-                      └─ trap.S → trap.c  five ticks, then milestone 2
+                      └─ trap.S → trap.c  five ticks, then milestone 3
 ```
 
 Three decisions worth keeping in mind when this is extended:
@@ -162,6 +168,7 @@ Three decisions worth keeping in mind when this is extended:
 |---|---|---|
 | 1 | console up | **done** — firmware handoff, `gp`/`sp`/`.bss`, SBI `ecall` |
 | 2 | trap vector + timer | **done** — `stvec` installed, five supervisor timer interrupts taken and counted |
+| 2b | physical memory + MMU | **done** — 4 KiB page allocator, Sv39 page tables with per-section permissions, MMU live while the ticks are taken |
 | 3 | device tree | parse the DTB OpenSBI passes in `a1`; find UART + CLINT. Needed for anything but the Sstc timer |
 | 4 | interrupts | PLIC, UART interrupts, per-hart interrupt stacks, IPL equivalent |
 | 5 | physical memory | page tables, first allocator |
@@ -193,10 +200,11 @@ Every milestone is validated against the host, not against a userland:
   requires the milestone banner exactly once per run. The repetition is not
   paranoia: the firmware's choice of boot hart varies between runs, and a
   single run per hart count does not exercise that.
-- `riscv64/make selftest` — builds a variant that raises a deliberate illegal
-  instruction after the trap vector is installed, and requires the handler to
-  report it. This is how the exception path is kept honest without breaking
-  the normal boot.
+- `riscv64/make selftest` — builds two variants and checks both fault paths:
+  one raises a deliberate illegal instruction, the other stores to the
+  read-only data and requires a store/AMO page fault (`scause = 15`), which
+  is what proves the Sv39 permissions are real rather than merely
+  installed.
 - `riscv64/make disasm` — check `_start` really landed at the load address and
   that `.bss` symbols exist; this catches linker-script mistakes that would
   otherwise appear as a silent hang.

@@ -103,6 +103,22 @@ csr_read_stval(void)
 	return v;
 }
 
+/* The supervisor address translation register. Mode 8 is Sv39. */
+static inline unsigned long
+csr_read_satp(void)
+{
+	unsigned long v;
+
+	__asm__ volatile ("csrr %0, satp" : "=r" (v));
+	return v;
+}
+
+static inline void
+csr_write_satp(unsigned long v)
+{
+	__asm__ volatile ("csrw satp, %0" ::"r" (v));
+}
+
 static inline unsigned long
 csr_read_time(void)
 {

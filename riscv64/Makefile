@@ -53,17 +53,18 @@ LDFLAGS := $(ARCHFLAGS) -nostdlib -no-pie -static \
 	-T $(LD_SCRIPT) -Wl,--gc-sections \
 	-Wl,-Map,$(BUILD)/hurd-riscv64-boot.map
 
-SRCS_C := src/main.c src/console.c src/sbi.c src/uart.c src/trap.c src/timer.c
+SRCS_C := src/main.c src/console.c src/sbi.c src/uart.c src/trap.c src/timer.c \
+           src/pmm.c src/vm.c
 SRCS_S := src/boot.S src/trap.S
 # C and assembly objects go to different directories: src/trap.c and
 # src/trap.S would otherwise share one object name.
 OBJS   := $(SRCS_C:%.c=$(BUILD)/c/%.o) $(SRCS_S:%.S=$(BUILD)/s/%.o)
 
 # The banners the milestone is defined by; `make verify` greps for them.
-BANNER := hurd-riscv64: milestone 2 reached, halting
-BANNER1 := hurd-riscv64: milestone 1 reached
+BANNER := hurd-riscv64: milestone 3 reached, halting
+BANNER1 := hurd-riscv64: milestone 2 reached
 
-.PHONY: all check build run verify selftest debug disasm clean
+.PHONY: all check build run verify selftest selftest-build debug disasm clean
 
 all: build
 
@@ -139,26 +140,41 @@ verify: build
 	done; \
 	exit $$fail
 
-# Exercise the exception path on purpose: build a variant that raises a
-# deliberate illegal instruction right after the trap vector is installed, and
-# require the handler to report it.  The handler treats an exception as fatal,
-# so the kernel stops there; the report is what is being checked.
-selftest: build
-	@$(MAKE) --no-print-directory build-selftest
-	@out=$$(timeout 30 $(QEMU) -machine virt -m $(MEM) -nographic \
-		-no-reboot -bios default -kernel $(BUILD)/hurd-riscv64-selftest.elf 2>&1); \
-	printf '%s\n' "$$out" | grep -E 'self-test|trap: exception' || \
-		{ echo "  FAIL: the trap handler did not report the exception"; exit 1; }; \
-	if printf '%s\n' "$$out" | grep -q 'trap: exception'; then \
-		echo "  selftest: PASS, the exception was caught and reported"; \
-	else \
-		echo "  selftest: FAIL"; exit 1; \
-	fi
+# Exercise the fault paths on purpose.  Two variants, because the kernel
+# stops on the first fault it does not expect:
+#
+#   exception  raises a deliberate illegal instruction;
+#   rodata     stores to the read-only data, which under Sv39 must raise a
+#              store/AMO page fault (cause 15).
+#
+# Both are built from the same sources, with -DSELFTEST_... selecting which.
+SELFTEST_LDFLAGS = $(BUILD)/hurd-riscv64-selftest.elf
 
-build-selftest:
+selftest: build
+	@fail=0; \
+	for mode in exception rodata; do \
+		$(MAKE) --no-print-directory selftest-build SELFTEST_MODE=$$mode; \
+		out=$$(timeout 30 $(QEMU) -machine virt -m $(MEM) -nographic \
+			-no-reboot -bios default -kernel $(SELFTEST_LDFLAGS) 2>&1); \
+		if printf '%s\n' "$$out" | grep -q 'selftest: PASS'; then \
+			echo "  selftest $$mode: PASS"; \
+			printf '%s\n' "$$out" | grep -E 'selftest|trap: ' | sed 's/^/    /'; \
+		else \
+			echo "  selftest $$mode: FAIL"; \
+			printf '%s\n' "$$out" | tail -3 | sed 's/^/    /'; \
+			fail=1; \
+		fi; \
+	done; \
+	exit $$fail
+
+selftest-build:
 	@mkdir -p $(BUILD)/selftest
+ifeq ($(SELFTEST_MODE),rodata)
+	$(CC) $(CFLAGS) -DSELFTEST_RODATA_FAULT -c -o $(BUILD)/selftest/main.o src/main.c
+else
 	$(CC) $(CFLAGS) -DSELFTEST_ILLEGAL_INSTRUCTION -c -o $(BUILD)/selftest/main.o src/main.c
-	$(CC) $(LDFLAGS) -o $(BUILD)/hurd-riscv64-selftest.elf \
+endif
+	$(CC) $(LDFLAGS) -o $(SELFTEST_LDFLAGS) \
 		$(BUILD)/selftest/main.o $(filter-out $(BUILD)/c/src/main.o,$(OBJS)) -lgcc
 
 # Start stopped so a debugger can attach before the first instruction.

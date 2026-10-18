@@ -113,4 +113,12 @@ extern char trap_entry[];
  */
 void trap_handler(struct trap_frame *frame);
 
+/*
+ * When non-zero, an exception whose cause code equals this value is treated
+ * as the expected outcome of a self test: it is reported and the kernel
+ * stops, instead of being reported as an unexpected fault.  Zero means "no
+ * exception is expected".
+ */
+extern unsigned long trap_expected_cause;
+
 #endif /* TRAP_H */

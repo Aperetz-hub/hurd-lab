@@ -6,14 +6,18 @@
  * the hart id that the SBI boot protocol passed in `a0`, because `a0` is the
  * first argument register and `boot.S` calls us without touching it.
  *
- * Milestone 2 does, in this order:
+ * Milestone 3 does, in this order:
  *   1. bring up the console;
  *   2. exercise the SBI base extension and print what the firmware says
  *      about itself (spec version, implementation id and version, and which
  *      extensions are available);
  *   3. install the S-mode trap vector;
- *   4. arm the S-mode timer and wait for five supervisor timer interrupts;
- *   5. report milestone 2 and park.
+ *   4. arm the S-mode timer;
+ *   5. build the Sv39 page tables and switch the MMU on;
+ *   6. take five supervisor timer interrupts *with the MMU live*, which is
+ *      what proves that the identity mapping, the permissions and the UART
+ *      mapping are all right;
+ *   7. report milestone 3 and park.
  *
  * Every step prints what it observed, so that a failure says where it
  * happened rather than only that it happened.
@@ -23,9 +27,12 @@
 
 #include "console.h"
 #include "csr.h"
+#include "linker.h"
+#include "pmm.h"
 #include "sbi.h"
 #include "timer.h"
 #include "trap.h"
+#include "vm.h"
 
 /* Declared here as well because boot.S calls it by name. */
 void kmain(unsigned long hartid);
@@ -84,6 +91,7 @@ void
 kmain(unsigned long hartid)
 {
 	struct sbiret r;
+	void *probe_page;
 
 	console_init();
 
@@ -115,8 +123,7 @@ kmain(unsigned long hartid)
 	print_probe("SBI extension probe legacy console", SBI_EID_LEGACY_CONSOLE);
 	print_probe("SBI extension probe time", SBI_EID_TIME);
 
-	/* The SBI TIME extension reads the wall clock; the timebase tells us
-	 * how fast it runs. */
+	/* The SBI TIME extension reads the wall clock. */
 	r = sbi_timer_time();
 	console_puts("SBI wall clock ");
 	console_putdec((unsigned long)r.value);
@@ -124,14 +131,32 @@ kmain(unsigned long hartid)
 	console_putdec_signed(r.error);
 	console_puts(")\r\n");
 
-	r = sbi_timer_timebase();
-	console_puts("SBI timebase ");
-	console_putdec((unsigned long)r.value);
-	console_puts(" (error ");
-	console_putdec_signed(r.error);
-	console_puts(")\r\n");
-
 	console_puts("hurd-riscv64: milestone 1 reached\r\n");
+
+	/*
+	 * The physical allocator. It runs before the MMU is on, because the
+	 * page tables are built from it.
+	 */
+	pmm_init();
+	console_puts("pmm: pool ");
+	console_putdec(pmm_free_pages());
+	console_puts(" pages of 4 KiB\r\n");
+
+	/* Take one page and hand it straight back, to show that the pool
+	 * hands out aligned, zeroed pages. */
+	probe_page = pmm_alloc_page();
+	if (probe_page == NULL) {
+		console_puts("pmm: no page available\r\n");
+	} else {
+		console_puts("pmm: allocated page at ");
+		console_puthex((unsigned long)probe_page);
+		console_puts(", aligned=");
+		console_puthex(((unsigned long)probe_page % 4096) == 0 ? 1 : 0);
+		console_puts(", free now ");
+		console_putdec(pmm_free_pages());
+		console_puts("\r\n");
+		pmm_free_page(probe_page);
+	}
 
 	/*
 	 * Install the S-mode trap vector. The ecall from S-mode is not
@@ -145,31 +170,57 @@ kmain(unsigned long hartid)
 	console_puts("installed stvec ");
 	console_puthex(csr_read_stvec());
 	console_puts("\r\n");
-
 #ifdef SELFTEST_ILLEGAL_INSTRUCTION
 	/*
 	 * Self-test: raise a deliberate illegal instruction and check that the
 	 * trap handler catches it and reports the context.  The handler treats
-	 * an exception as fatal, so the kernel stops here on purpose; the point
-	 * is the report that precedes it.
+	 * an exception it does not expect as fatal, so the kernel stops here on
+	 * purpose; the report is what is being checked.
 	 */
-	console_puts("self-test: raising an illegal instruction\r\n");
+	trap_expected_cause = 2;
+	console_puts("selftest: raising an illegal instruction\r\n");
 	__asm__ volatile (".word 0x00000000");
+	console_puts("selftest: FAIL, the illegal instruction did not fault\r\n");
 #endif
 
-	/* Arm the timer and wait for the interrupts to arrive. */
+	console_puts("hurd-riscv64: milestone 2 reached\r\n");
+
+	/* Arm the timer. */
 	if (timer_init(TIMER_INTERVAL_TICKS) != 0) {
-		console_puts("hurd-riscv64: milestone 2 NOT reached, no timer\r\n");
+		console_puts("hurd-riscv64: milestone 3 NOT reached, no timer\r\n");
 		for (;;) {
 			__asm__ volatile ("wfi");
 		}
 	}
 
+	/*
+	 * Switch the MMU on. Everything after this point runs with the page
+	 * tables live, which is the point of the exercise: the console, the
+	 * trap vector and the timer must all keep working.
+	 */
+	vm_init();
+
+#ifdef SELFTEST_RODATA_FAULT
+	/*
+	 * Self-test: the read-only data is mapped read-only, so a store to it
+	 * must raise a store/AMO page fault (cause 15).  If the permissions
+	 * were wrong the store would simply succeed, and the test would fail
+	 * by reaching the code after it.
+	 */
+	trap_expected_cause = 15;
+	console_puts("selftest: storing to .rodata at ");
+	console_puthex((unsigned long)__rodata_start);
+	console_puts("\r\n");
+	*(volatile uint64_t *)__rodata_start = 0;
+	console_puts("selftest: FAIL, the store to .rodata did not fault\r\n");
+#endif
+
+	/* Wait for the interrupts, with the MMU live. */
 	while (timer_tick_count() < TIMER_TICKS_TARGET) {
 		__asm__ volatile ("wfi");
 	}
 
-	console_puts("hurd-riscv64: milestone 2 reached, halting\r\n");
+	console_puts("hurd-riscv64: milestone 3 reached, halting\r\n");
 
 	/* Park the hart; the timer is disarmed by the handler's halt path. */
 	csr_write_sie(csr_read_sie() & ~CSR_SIE_STIE);
