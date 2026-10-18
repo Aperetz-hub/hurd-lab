@@ -47,9 +47,45 @@ Experimental fork of GNU/Hurd (64-bit) with two goals:
   6115 ticks in 61.140 s of host time, i.e. **100.017 ticks/s**, and the
   kernel's own `uptime` tracked the host clock to 0.017 %. Full measurements
   in `docs/suivi.md` § *SMP + vioif0 MP stress test*.
+- **The AP takes its own periodic timer interrupts — measured** (18/10/2026,
+  `vm/ap-timer-probe.py`). Both questions the stress pass left open are now
+  answered. The application processor *does* run its own periodic LAPIC timer,
+  independent of the master's clock: `machine_slot[1].cpu_ticks[]` advances at
+  **85.8 Hz** with the default `kernel-irqchip=on` and **163.5 Hz** with
+  `kernel-irqchip=split`, against a master at 100.0 and 200.0 Hz respectively.
+  That counter is incremented only inside `clock_interrupt()`, outside the
+  master-only guard, so it can only move if that CPU took an interrupt — and
+  under load CPU 1 accounted **136.9 Hz of its own user-mode time**, which is
+  how the kernel charges that CPU at all.
+  **The two QEMU irqchip configurations are not interchangeable**, and the
+  difference is larger than it looks: with `kernel-irqchip=split` the master
+  clock runs at **200 Hz against a kernel built for 100**, so the guest's time
+  of day advances at **2x real time** and every guest-measured duration is
+  inflated by half again. With the default the clock is accurate to 0.01 %, so
+  the stress pass's 100.017 ticks/s is *confirmed*, not overturned. See
+  `docs/suivi.md` § *x86_64: the AP's LAPIC timer, and heavy vioif0
+  throughput*.
+- **`vioif0` survives sustained heavy TCP — measured** (18/10/2026,
+  `vm/vioif-throughput.sh`). 100 MiB transfers, guest → host, throughput
+  counted by the host sink that receives the bytes:
+
+  | QEMU irqchip | idle | under the full MP load |
+  |---|---|---|
+  | `kernel-irqchip=on` | **3.059 MiB/s** | **3.058 MiB/s** (−0.04 %) |
+  | `kernel-irqchip=split` | **5.538 MiB/s** | **4.395 MiB/s** (−20.6 %) |
+
+  All four transfers delivered exactly 104857600 bytes with **zero stalls**
+  (the per-second progress marks are strictly monotonic throughout) and **0 %
+  ICMP loss**. `scp` of the same volume over the same device reaches 4.396
+  MiB/s, within 0.03 % of raw TCP, so the cipher is not the limit — the earlier
+  note that 5 pkt/s does not saturate the virtio queues is true of ICMP and
+  false of TCP, which sustains ~1400 packets/s here. **TCP retransmit counts
+  are still not measured**: the guest has no `/proc/net` and slirp terminates
+  the connection inside QEMU.
   **Still not shown**: that the Hurd userland is SMP-*correct*. Two CPUs run
-  concurrent work and the clock holds, but no MP workload of the user's own
-  was run, and the AP is not exercised for anything but that.
+  concurrent work, both take clock interrupts, and the clock holds, but that
+  the timeslice accounting, run queues and AST path are safe with two
+  processors in user space at once is a separate question and remains open.
 
 > **History.** The dev VM disk was corrupted on 17/10
 > (re-extracting the base image while an overlay was in service) then
@@ -68,12 +104,25 @@ messages.
   see below).
 - `vm/` — QEMU scripts (`-M q35`; e1000 + pcnet + virtio-net; SSH
   localhost:2222 e1000 / :2223 virtio), the SMP trial harness, the kernel
-  thermometer (`kprobe.py`) and the SMP + vioif0 MP stress harness
+  probes (`kprobe.py`, `clock-probe.py`, `ap-timer-probe.py`) and the SMP +
+  vioif0 MP stress and throughput harnesses
   (`smp-stress-run.sh`).
 - `patches/` — consolidated patches + rump build tooling (virtio) and the
   SMP test kernel (`gnumach-smp-test`, ELF with `debug_info`).
 - `scripts/` — vioif boot integration: `start-rumpnet.sh`,
   `interfaces.vioif`, `net-switch-vioif.sh`.
+- `vm/clock-probe.py`, `vm/ap-timer-probe.py` — read the kernel's own
+  timekeeping and per-CPU clock-interrupt counters straight out of guest memory
+  through the QEMU monitor, against the host wall clock. These measure the AP's
+  timer and the guest clock rate; see `docs/suivi.md`.
+- `vm/memread-check.py` — self-checks for those probes. The QEMU monitor's
+  `xp/Nx` reads **bytes**, not words, and the kernel is linked at
+  `0xffffffff80000000` but loaded at 1 MiB; both mistakes return plausible
+  numbers rather than errors, so the checks are there to catch them.
+- `vm/vga-console.py` — decodes the guest's VGA text console out of guest
+  memory, because the Hurd console is not the serial line.
+- `vm/vioif-throughput.sh`, `vm/vioif-send.py` — the sustained-throughput
+  experiment over `vioif0`.
 - `riscv64/` — **experimental**: bare-metal `rv64gc` kernel skeleton for the
   QEMU `virt` board (OpenSBI + SBI console), written in freestanding C and
   GNU assembler and built with `riscv64-linux-gnu-gcc` / `make`, like the rest

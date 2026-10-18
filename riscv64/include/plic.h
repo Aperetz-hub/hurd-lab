@@ -47,15 +47,15 @@
  * indexed with.
  *
  * Because that is a property of how the board is described rather than of the
- * chip, it is not taken on trust: `plic_discover_context()` establishes the
- * same number by effect, and the self test compares the two.  If a future board
- * describes its contexts differently, the comparison says so instead of the
- * interrupt silently never arriving.
+ * chip, it is not merely assumed: the self test establishes the same number by
+ * effect and compares the two.  If a future board describes its contexts
+ * differently, the comparison says so instead of the interrupt silently never
+ * arriving.
  *
  * Note on KVM: under `-enable-kvm` QEMU writes only two cells per hart, so
  * OpenSBI's `cell_index / 2` gives the S-mode context of hart N as N.  The
  * kernels here are booted under TCG (the Makefile does not pass -enable-kvm),
- * and `plic_discover_context()` is what would catch a mismatch.
+ * and the self test is what would catch a mismatch.
  *
  * The interrupt
  * -------------

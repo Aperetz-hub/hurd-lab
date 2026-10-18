@@ -1820,6 +1820,245 @@ being the right long-term home for the hart id: it works because it is
 preserved across calls and by the trap frame, and it is not a substitute for
 per-CPU storage.
 
+## x86_64: the AP's LAPIC timer, and heavy vioif0 throughput (18/10/2026)
+
+Track 2 of this pass. Both questions the previous SMP + vioif0 pass left open,
+answered by measurement.
+
+Kernel `4207ebda`, verified in the guest as
+`/boot/gnumach-1.8-amd64-up.gz`, md5 `ef48c06764b054f35cd1d06dfc495828` — the
+same image the previous pass measured. Guest on a **full copy** of the dev disk
+(`vm/hurd-smp-vioif-test.qcow2`, no backing chain), so the dev disk was never
+opened for writing; its mtime is unchanged (17/10 13:51), as is
+`ovl-fork-master.qcow2` (17/10 22:50).
+
+**Everything below is reported for two QEMU irqchip configurations**, because
+that turned out to be the variable behind an apparent contradiction, and because
+the previous pass's clock figures were taken in one of them:
+
+| | `kernel-irqchip=on` (the default) | `kernel-irqchip=split` |
+|---|---|---|
+| IOAPIC emulated by | KVM, in the guest | QEMU, in userspace |
+| why it matters here | the default; the `-smp 2` hang was intermittent here | what boots `-smp 2` reliably (docs/suivi.md, 2nd/3rd pass) |
+
+### FACT — yes, the application processor takes its own periodic timer interrupts
+
+The measurement that settles it is `machine_slot[cpu].cpu_ticks[]`, which
+`clock_interrupt()` increments at `kern/mach_clock.c:239`:
+
+```c
+	machine_slot[my_cpu].cpu_ticks[state]++;
+	...
+	if (my_cpu == master_cpu) {
+		...
+		elapsed_ticks++;
+```
+
+The per-CPU increment is **outside** the master-only guard. Nothing else in the
+kernel writes those words, so they can only move if that processor took a clock
+interrupt. `elapsed_ticks` cannot answer the question: it is inside the guard,
+which is why a reading of it alone distinguishes nothing about CPU 1.
+
+| configuration | CPU | user | system | idle | **total** |
+|---|---|---|---|---|---|
+| irqchip on | cpu0 (master) | 0.00 | 0.05 | 99.93 | **99.98 Hz** |
+| irqchip on | cpu1 (AP) | 0.00 | 0.00 | 85.83 | **85.83 Hz** |
+| irqchip split | cpu0 (master) | 0.00 | 0.24 | 199.77 | **200.01 Hz** |
+| irqchip split | cpu1 (AP) | 0.00 | 0.00 | 163.50 | **163.50 Hz** |
+
+Under the full concurrent load — a CPU burner on each processor set, rumpdisk
+write+fsync+read, ICMP — with `kernel-irqchip=split`, 30 s:
+
+| CPU | user | system | idle | total |
+|---|---|---|---|---|
+| cpu0 (master) | 122.15 | 72.46 | 5.37 | **199.98 Hz** |
+| cpu1 (AP) | 136.88 | 23.03 | 3.57 | **163.48 Hz** |
+
+The loaded row is the strong form of the answer: **CPU 1 took 136.9 clock
+interrupts per second while executing user-mode code**, which is how the kernel
+accounts that CPU's user time at all — `cpu_ticks[1].user` went from 0 to 3454
+across the load window. Its total rate is the same idle and saturated
+(163.50 vs 163.48 Hz), which is what a timer-driven preemption tick does.
+
+The AP's rate is consistently **lower than the master's** — 0.858 of it with the
+in-kernel irqchip, 0.818 with the split one — and that is reproduced across both
+configurations and across every window measured.
+
+Corroboration from the LAPIC registers, `info lapic <apic-id>` (irqchip on):
+
+```
+cpu0: LVTT  0x00010030 active-hi edge  masked       one-shot   Fixed (vec 48)
+cpu0: Timer DCR=0x0 (divide by 2) initial_count = 4294967295
+cpu1: LVTT  0x00020030 active-hi edge  (unmasked)   periodic   Fixed (vec 48)
+cpu1: Timer DCR=0x0 (divide by 2) initial_count = 5824027
+```
+
+with the kernel's `calibrated_ticks = 5824027`, exactly CPU 1's `initial_count`.
+That identifies which processor the LAPIC timer path ran on:
+`lapic_enable_timer()` (`i386/i386at/ioapic.c:275`) is the only writer of
+`init_count`, and `i386/i386at/model_dep.c:932` only calls it when
+`cpu_number() != 0`. CPU 0's own LVTT is the leftover one-shot from the
+calibration, consistent with the master clock arriving through the IO-APIC rather
+than the local APIC. `calibrated_ticks` differs between the two configurations
+(5824027 vs 3058214), so the calibration is itself configuration-dependent.
+
+Under KVM these LAPIC readings are QEMU's shadow of the in-kernel LAPIC, so they
+corroborate; they are not the proof. The `cpu_ticks` count is the proof.
+
+### FACT — the previous pass's clock figures were right, and a second rate is not
+
+`elapsed_ticks` and `uptime`, against the host wall clock:
+
+| configuration | `elapsed_ticks` | `uptime` / host clock | kernel `hz` |
+|---|---|---|---|
+| irqchip on | **99.999 Hz** (20 s window) | **0.99999** | 100 |
+| irqchip on | 99.931 Hz / 100.030 Hz (during the throughput run) | 1.0003 | 100 |
+| irqchip split | **199.91 Hz** (15 s window) | **2.0005** | 100 |
+| irqchip split | 200.06 Hz / 200.08 Hz (during the throughput run) | 2.0006 | 100 |
+
+So with the **default** irqchip the guest clock is correct to within 0.01%, and
+the previous pass's `100.017 ticks/s` and `uptime/host = 1.00017` are confirmed
+rather than overturned. With **`kernel-irqchip=split`** — the configuration this
+lab uses because it is the one that boots `-smp 2` reliably — the master clock
+runs at exactly twice the rate the kernel is built for, `clock_interrupt` adds
+10 ms of `uptime` per tick, and **the guest's time of day runs at 2x real time**.
+
+Cross-checked without relying on either clock alone: the guest and the host each
+measured the duration of one 100 MiB transfer, where the host counts the bytes it
+receives.
+
+| configuration | host | guest clock | ratio |
+|---|---|---|---|
+| irqchip on, idle | 32.690 s | 32.648 s | 0.9987 |
+| irqchip on, loaded | 32.703 s | 32.658 s | 0.9986 |
+| irqchip split, idle | 18.056 s | 36.002 s | 1.994 |
+| irqchip split, loaded | 22.752 s | 45.228 s | 1.988 |
+
+Practical consequence: **in the `split` configuration every guest-measured
+duration is inflated by about 2x**, and a guest-side benchmark would report
+throughput at half the real rate. This is why every throughput figure below comes
+from the host sink rather than from the guest.
+
+Whether the doubled rate is QEMU's userspace IOAPIC delivering the ACPI timer
+interrupt twice as often, or the guest configuring it differently as a result, is
+**not determined here**. What is measured is that the two configurations differ,
+and that they differ in the master clock rate, the per-CPU rates, and the
+achievable network throughput.
+
+A related caution about the previous pass's guest-side sampler: it compared
+`uptime` with a clock also derived from the same kernel timekeeping
+(`CLOCK_MONOTONIC` and `CLOCK_REALTIME` both come from it), so
+`uptime/monotonic = 0.999917` is consistent with a clock running at any *uniform*
+rate and is not evidence that the rate is right. The host-based measurement above
+is what establishes the rate.
+
+### FACT — question 2: vioif0 survives sustained heavy TCP
+
+100 MiB per transfer, throughput measured by the host sink that receives the
+bytes. The guest's clock is used for no duration in this table.
+
+| configuration | transfer | host time | throughput |
+|---|---|---|---|
+| irqchip on | raw TCP guest → host, **idle** | 32.690 s | **3.0590 MiB/s** |
+| irqchip on | raw TCP guest → host, **under full load** | 32.703 s | **3.0578 MiB/s** |
+| irqchip split | raw TCP guest → host, **idle** | 18.056 s | **5.5382 MiB/s** |
+| irqchip split | raw TCP guest → host, **under full load** | 22.752 s | **4.3953 MiB/s** |
+| irqchip on | `scp` 100 MiB host → guest, same device, idle | 22.740 s | **4.396 MiB/s** |
+
+The load is the SMP stress pass's: a CPU-bound worker on the master processor
+set, one on the slave processor set through `/sbin/smp`, rumpdisk write+fsync+
+read, and ICMP to the gateway and to 8.8.8.8.
+
+Findings:
+
+- **Correctness: intact in all four transfers.** Each delivered exactly 104857600
+  bytes. TCP's checksums plus the exact count mean nothing was lost or corrupted.
+- **No stalls.** The per-second progress marks are strictly monotonic from 0 to
+  100 MiB in every transfer: zero intervals where nothing moved, including the
+  two under full load.
+- **The load costs nothing with the in-kernel irqchip** (3.0590 → 3.0578 MiB/s,
+  -0.04%) and **20.6% with the split irqchip** (5.5382 → 4.3953 MiB/s). The
+  split configuration is the faster one both idle and loaded, by about 1.8x and
+  1.4x respectively.
+- **SSH is not the bottleneck.** `scp` and raw TCP land within 0.03% of each
+  other (4.396 vs 4.395 MiB/s) and `scp` is the one *with* a cipher on top, so at
+  these rates the device, not the cipher, limits the transfer.
+- **The earlier note that "5 pkt/s does not saturate the virtio queues" does not
+  extend to TCP.** 3 MiB/s is about 1400 packets per second sustained, and it is
+  an order of magnitude above what ICMP reached, with no loss and no stalls.
+- **ICMP under load**: 261/261 to the gateway; 113/114 and 191/192 to 8.8.8.8. The
+  latter two are one packet in about a hundred, and ping prints "0% packet loss"
+  because it rounds.
+
+### A measurement trap worth recording: `xp/Nx` reads bytes
+
+QEMU's HMP `x` command only honours a size of `b`/`h`/`w`/`l`/`q`. With
+`xp/4x` the `x` is taken as a formatting flag and the size stays one **byte**.
+A parser written for the word form reads the byte form, picks up the low byte of
+each 32-bit word, and returns numbers that look like counters rather than the
+counters. This bit the new tools and nothing else: the existing `vm/kprobe.py`
+uses `x/`, which is a **virtual** dump, so the link-time addresses from `nm` are
+exactly the right kind of address for it and it was reading the kernel correctly
+all along. The two commands are not interchangeable:
+
+```
+x/2wx  0xffffffff810be2a8  ->  0x11a8 ...   (virtual: needs the link-time address)
+xp/2wx 0x10be2a8           ->  0x11a8 ...   (physical: needs the address translated)
+```
+
+`x` also depends on whose page tables the monitor uses, which on a two-CPU guest
+is CPU 0's; `xp` with the address translated does not. The new tools use `xp` and
+translate, and `vm/memread-check.py` exists to make both facts fail loudly:
+
+1. `percpu_array[0].self` must equal `percpu_array[0]` — confirms the translation;
+2. `uptime.seconds` must equal `elapsed_ticks / 100` — two variables in different
+   parts of `.bss`, read independently, so a wrong width breaks at least one;
+3. `percpu_array[i].cpu_id` must equal `i`, and each slot's `self` must point at
+   itself — confirms index, stride and width at once.
+
+New tools, all of which pin the read width explicitly: `vm/clock-probe.py`,
+`vm/ap-timer-probe.py`, `vm/memread-check.py`, `vm/vga-console.py` (decodes the
+guest's VGA text console out of guest memory, because the Hurd console is not the
+serial line), `vm/vioif-send.py` and `vm/vioif-throughput.sh`.
+
+One measurement that was tried and abandoned, recorded so it is not retried:
+sampling each vCPU's RIP and counting how often it lands in the interrupt path.
+The handler occupies a few tens of microseconds out of every period and one
+monitor round trip costs about two milliseconds, so the sampling rate is two
+orders of magnitude coarser than the event. At 150 samples per CPU it reported
+zero hits for the **master** CPU as well — a CPU known to tick at 100 Hz — which
+is what makes the method worthless rather than merely weak.
+
+### NOT MEASURED — TCP retransmits
+
+Neither end can count them. The Hurd guest has no `/proc/net`, so there are no
+`Tcp:` counters; and for a connection the guest opens to 10.0.2.2 the TCP is
+terminated inside QEMU's user-mode stack, so the host's `/proc/net/snmp` never
+sees it. `info usernet` lists the slirp sockets and carries no counters.
+
+What stands in: the exact byte count on all four transfers, and progress marks
+that never flatline. Both show no loss that had to be retransmitted into a stall.
+Counting retransmits properly needs a `/proc/net` in the guest or a counter on
+the slirp side, and neither exists today.
+
+### SPECULATION
+
+Not claimed: that the AP's clock interrupt causes *correct* preemption. That it
+takes interrupts is measured; whether the timeslice accounting, the run queues
+and the AST path are safe with two processors running user code simultaneously is
+the separate question the previous pass left open, and nothing here speaks to it.
+
+Not claimed: why the AP's timer rate is lower than the master's. That it is
+lower, in both configurations, by a reproducible factor, is measured. A single
+global `calibrated_ticks`, measured once on the BSP and reused by every AP, is
+consistent with the data — the AP's period then depends on its own LAPIC timer
+clock, which under KVM need not match the BSP's — but the data does not test it.
+
+Not claimed: that 5.5 MiB/s is a ceiling. It is what this host, this guest and
+these configurations produced. The obvious next question is the same transfer with
+the burners stopped, on a host with more CPU than the two vCPUs can consume, which
+this host does not have.
+
 ## Disk safety (permanent rules)
 
 - **Never** boot `debian-hurd-amd64-*.img` in write mode.
