@@ -1,0 +1,58 @@
+From 00b380c8085c9f06b5247373c86d7e0815d3b3d0 Mon Sep 17 00:00:00 2001
+From: Ariel Peretz <benoit.casse@gmail.com>
+Date: Sat, 17 Oct 2026 12:00:00 +0200
+Subject: [PATCH] rumpnet: fix the sec/usec order of bpf_hdr on x86_64
+To: bug-hurd@gnu.org
+
+rumprt net declares its own struct bpf_hdr instead of using the NetBSD
+one, and on x86_64 the two time fields were declared in the wrong order:
+
+  struct bpf_hdr {
+  #if defined (__x86_64__)
+-  int64_t usec;
+    int64_t sec;
++  int64_t usec;
+  #else
+-  int32_t usec;
+    int32_t sec;
++  int32_t usec;
+  #endif
+
+NetBSD declares the timestamp first, as a struct bpf_timeval, and that
+struct is { long tv_sec; long tv_usec; } (see sys/net/bpf.h), i.e. the
+seconds come first.  So the value the translator reads back from the
+buffer written by the rump BPF device is the microseconds where the
+seconds are expected and vice versa.
+
+bh_caplen, bh_datalen and bh_hdrlen are unaffected: they sit after the
+timestamp in both layouts, so the offsets 16/20/24 that the translator
+relies on do not move.  Nothing in the Hurd reads the timestamp back
+today, which is why this has gone unnoticed; it becomes wrong the moment
+anything does (a capture tool, a statistics counter).
+
+Swap the two fields so the declaration matches the ABI it is talking to.
+---
+ rumpnet/net-rump.c | 4 ++--
+ 1 file changed, 2 insertions(+), 2 deletions(-)
+
+diff --git a/rumpnet/net-rump.c b/rumpnet/net-rump.c
+index 659b0df4..2030b973 100644
+--- a/rumpnet/net-rump.c
++++ b/rumpnet/net-rump.c
+@@ -126,11 +126,11 @@ struct bpf_program {
+ 
+ struct bpf_hdr {
+ #if defined (__x86_64__)
+-  int64_t usec;
+   int64_t sec;
++  int64_t usec;
+ #else
+-  int32_t usec;
+   int32_t sec;
++  int32_t usec;
+ #endif
+   uint32_t bh_caplen;	/* length of captured portion */
+   uint32_t bh_datalen;	/* original length of packet */
+-- 
+2.47.3
+

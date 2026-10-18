@@ -1,0 +1,38 @@
+From a6fb896849f15b62a87087cd1699c292e8007396 Mon Sep 17 00:00:00 2001
+From: Ariel Peretz <benoit.casse@gmail.com>
+Date: Sat, 17 Oct 2026 12:00:00 +0200
+Subject: [PATCH] rumpnet: link the pcn driver (AMD PCnet) too, not only wm
+To: bug-hurd@gnu.org
+
+RUMPLIBS only pulls in rumpdev_pci_if_wm, so rumpnet can attach a wm
+device and nothing else, even though the rump kernel tree ships the pcn
+driver as well (sys/rump/dev/lib/libpci_if_pcn, library rumpdev_pci_if_pcn).
+
+No interface name is hardcoded anywhere in rumpnet: the if_* drivers
+attach through the rump autoconf machinery, so linking the extra
+library is all that is needed to make AMD PCnet cards usable.
+
+This is what QEMU's -device pcnet (the default on some machines and the
+model used by the Hurd test setups) needs.
+
+Keep wm first: it stays the default driver, this only adds a second one.
+---
+ rumpnet/Makefile | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/rumpnet/Makefile b/rumpnet/Makefile
+index 579197e1..60f6bd5c 100644
+--- a/rumpnet/Makefile
++++ b/rumpnet/Makefile
+@@ -15,7 +15,7 @@
+ #   along with this program; if not, write to the Free Software
+ #   Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ 
+-RUMPLIBS=rump rumpuser rumpdev rumpdev_miiphy rumpdev_pci rumpvfs rumpdev_pci_if_wm rumpnet rumpnet_net rumpnet_netinet rumpnet_local rumpdev_bpf
++RUMPLIBS=rump rumpuser rumpdev rumpdev_miiphy rumpdev_pci rumpvfs rumpdev_pci_if_wm rumpdev_pci_if_pcn rumpnet rumpnet_net rumpnet_netinet rumpnet_local rumpdev_bpf
+ # If we have a configured tree, include the configuration so that we
+ # can conditionally build translators.
+ ifneq (,$(wildcard ../config.make))
+-- 
+2.47.3
+

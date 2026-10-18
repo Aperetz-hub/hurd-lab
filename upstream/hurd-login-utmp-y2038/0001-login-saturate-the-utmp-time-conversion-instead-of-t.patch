@@ -1,0 +1,61 @@
+From d147865501f288eb7849db9b849ba56a81ac4f88 Mon Sep 17 00:00:00 2001
+From: Ariel Peretz <benoit.casse@gmail.com>
+Date: Sat, 17 Oct 2026 12:00:00 +0200
+Subject: [PATCH] login: saturate the utmp time conversion instead of
+ truncating it (Y2038)
+To: bug-hurd@gnu.org
+
+Commit 69905110 already fixed the real bug here, which was copying a
+64-bit struct timeval into the 32-bit utmp.ut_tv fields, by assigning
+field by field.  The assignment itself is still a silent truncation:
+
+  utmp.ut_tv.tv_sec = current_time.tv_sec;
+
+utmp.ut_tv is declared by glibc as a pair of 32-bit fields so that the
+utmp file format stays identical between 32-bit and 64-bit, while
+current_time.tv_sec is a time_t.  After 2038-01-19 the conversion wraps
+around and login writes a negative timestamp in the utmp database, which
+lastlog and friends then report as a date before 1970.
+
+Saturate at INT32_MAX instead of wrapping, and keep the field-by-field
+assignment so the sizes are never mismatched again.
+
+This only affects login writing utmp entries.  No behaviour before
+2038-01-19 changes.
+---
+ utils/login.c | 12 ++++++++++--
+ 1 file changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/utils/login.c b/utils/login.c
+index fb544fe8..f54d74fb 100644
+--- a/utils/login.c
++++ b/utils/login.c
+@@ -38,6 +38,7 @@
+ 
+ #include <netinet/in.h>
+ #include <arpa/inet.h>
++#include <stdint.h>
+ 
+ #include <sys/fcntl.h>
+ 
+@@ -165,8 +166,15 @@ add_utmp_entry (char *args, unsigned args_len, int inherit_host)
+   memset (&utmp, 0, sizeof(utmp));
+ 
+   gettimeofday (&current_time, NULL);
+-  /* For x86_64, sizeof(utmp.ut_tv) != sizeof(struct timeval) */
+-  utmp.ut_tv.tv_sec = current_time.tv_sec;
++  /* On 64-bit, struct timeval uses 64-bit time_t but utmp.ut_tv keeps
++     32-bit fields for file-format stability
++     (sizeof (utmp.ut_tv) != sizeof (struct timeval)).  Assign field by
++     field and saturate instead of wrapping after 2038. */
++  if (sizeof (utmp.ut_tv.tv_sec) < sizeof (current_time.tv_sec)
++      && current_time.tv_sec > INT32_MAX)
++    utmp.ut_tv.tv_sec = INT32_MAX;
++  else
++    utmp.ut_tv.tv_sec = current_time.tv_sec;
+   utmp.ut_tv.tv_usec = current_time.tv_usec;
+ 
+   strncpy (utmp.ut_name, envz_get (args, args_len, "USER") ?: "",
+-- 
+2.47.3
+

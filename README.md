@@ -65,6 +65,10 @@ messages.
   `interfaces.vioif`, `net-switch-vioif.sh`.
 - `riscv64/` — **experimental**: bare-metal `rv64gc` kernel skeleton for the
   QEMU `virt` board (OpenSBI + SBI console). Blueprint; not built yet.
+- `upstream/` — patches **prepared** for the GNU/Hurd project, one directory
+  per submission (`gnumach` and `hurd` targets), each with a cover note
+  giving the problem, the cause, the exact test commands and results, and the
+  known limits. Nothing here has been sent anywhere.
 - `docs/` — follow-up notes (`suivi.md`), plus `roadmap-riscv.md` for the
   experimental `riscv64/` track above.
 

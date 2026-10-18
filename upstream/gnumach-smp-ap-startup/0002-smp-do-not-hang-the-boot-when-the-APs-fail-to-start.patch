@@ -1,0 +1,190 @@
+From 5b64b11cd22e0f1d565c9ab04a660a40e446eb4d Mon Sep 17 00:00:00 2001
+From: Ariel Peretz <benoit.casse@gmail.com>
+Date: Sat, 17 Oct 2026 12:00:00 +0200
+Subject: [PATCH 2/3] smp: do not hang the boot when the APs fail to start
+To: bug-hurd@gnu.org
+
+Three loops in the AP bring-up path can spin forever:
+
+  - wait_for_ipi() polls lapic->icr_low.delivery_status with no bound, and
+    smp_startup_cpus() reacts to an error by looping in while(1);
+  - start_other_cpus() waits for machine_slot[cpu].running with no bound.
+
+A machine (or a QEMU configuration, or a hypervisor) that never delivers
+the INIT/SIPI IPIs therefore wedges the boot before any translator runs,
+with no diagnostic.
+
+Give every wait a bound and make the failure a degradation instead of a
+hang:
+
+  - wait_for_ipi() returns -1 on timeout, and smp_send_ipi_init() /
+    smp_send_ipi_startup_twice() propagate that error instead of
+    ignoring it;
+  - smp_startup_cpus() returns -1 instead of looping in while(1);
+  - start_other_cpus() degrades to BSP-only and bounds the per-AP wait to
+    5 s, reporting the AP it gave up on.
+
+Single-CPU behaviour is unchanged: with one CPU, start_other_cpus() never
+enters any of these paths.
+---
+ i386/i386/mp_desc.c | 30 +++++++++++++++++++-------
+ i386/i386/smp.c     | 51 +++++++++++++++++++++++++++++++--------------
+ 2 files changed, 57 insertions(+), 24 deletions(-)
+
+diff --git a/i386/i386/mp_desc.c b/i386/i386/mp_desc.c
+index 7ad205a3..aa40c197 100644
+--- a/i386/i386/mp_desc.c
++++ b/i386/i386/mp_desc.c
+@@ -44,6 +44,7 @@
+ #include <i386at/idt.h>
+ #include <i386at/int_init.h>
+ #include <i386/cpu.h>
++#include <i386/pit.h>
+ #include <i386/smp.h>
+ 
+ #include <i386at/model_dep.h>
+@@ -328,14 +329,27 @@ start_other_cpus(void)
+ 		machine_slot[cpu].running = FALSE;
+ 	}
+ 
+-	smp_startup_cpus(apic_get_current_cpu(), apboot_addr);
+-
+-	for (cpu = 1; cpu < ncpus; cpu++) {
+-		printf("Waiting for AP %d\n", cpu);
+-
+-		do {
+-			cpu_pause();
+-		} while (machine_slot[cpu].running == FALSE);
++	if (smp_startup_cpus(apic_get_current_cpu(), apboot_addr) != 0) {
++		printf("SMP: AP startup failed, continuing with BSP only\n");
++		ncpus = 1;
++	} else {
++		unsigned started = 0;
++		for (cpu = 1; cpu < ncpus; cpu++) {
++			int waited_ms = 0;
++			printf("Waiting for AP %d\n", cpu);
++
++			while (machine_slot[cpu].running == FALSE && waited_ms < 5000) {
++				pit_udelay(1000);
++				waited_ms++;
++			}
++			if (machine_slot[cpu].running == FALSE) {
++				printf("SMP: AP %d did not start within 5s, skipping\n", cpu);
++				break;
++			}
++			started++;
++		}
++		/* Only rely on contiguously started APs below. */
++		ncpus = started + 1;
+ 	}
+ 	printf("BSP: Completed SMP init\n");
+ 
+diff --git a/i386/i386/smp.c b/i386/i386/smp.c
+index 6b610020..9fe4a2d0 100644
+--- a/i386/i386/smp.c
++++ b/i386/i386/smp.c
+@@ -52,12 +52,18 @@ static void smp_data_init(void)
+ static void smp_send_ipi(unsigned logical_id, unsigned vector)
+ {
+     unsigned long flags;
++    int timeout = 100000;
+ 
+     cpu_intr_save(&flags);
+ 
+-    do {
++    while (lapic->icr_low.delivery_status == SEND_PENDING) {
++        if (--timeout == 0) {
++            printf("SMP: IPI delivery stuck, giving up send to %u\n",
++                   logical_id);
++            break;
++        }
+         cpu_pause();
+-    } while(lapic->icr_low.delivery_status == SEND_PENDING);
++    }
+ 
+     apic_send_ipi(NO_SHORTHAND, FIXED, LOGICAL, ASSERT, EDGE, vector, logical_id);
+ 
+@@ -74,14 +80,18 @@ void smp_pmap_update(unsigned logical_id)
+     smp_send_ipi(logical_id, CALL_PMAP_UPDATE);
+ }
+ 
+-static void
++/* Bounded wait for IPI delivery. Returns 0 on success, -1 on timeout,
++ * so a dead APIC/QEMU SMP config degrades instead of hanging the boot. */
++static int
+ wait_for_ipi(void)
+ {
+-    /* This could have a timeout, but if the IPI
+-     * is never delivered, its a disaster anyway */
++    int timeout = 100000;
+     while (lapic->icr_low.delivery_status == SEND_PENDING) {
+-	cpu_pause();
++        if (--timeout == 0)
++            return -1;
++        cpu_pause();
+     }
++    return 0;
+ }
+ 
+ static int
+@@ -99,7 +109,10 @@ smp_send_ipi_init(int bsp_apic_id)
+     apic_send_ipi(ALL_EXCLUDING_SELF, INIT, PHYSICAL, ASSERT, EDGE, 0, bsp_apic_id);
+ 
+     /* Wait for delivery */
+-    wait_for_ipi();
++    if (wait_for_ipi() != 0) {
++        printf("ESR error upon INIT assert: delivery timeout\n");
++        return -1;
++    }
+ 
+     /* Deassert INIT IPI:
+      *
+@@ -111,7 +124,10 @@ smp_send_ipi_init(int bsp_apic_id)
+     apic_send_ipi(ALL_EXCLUDING_SELF, INIT, PHYSICAL, DE_ASSERT, EDGE, 0, bsp_apic_id);
+ 
+     /* Wait for delivery */
+-    wait_for_ipi();
++    if (wait_for_ipi() != 0) {
++        printf("ESR error upon INIT deassert: delivery timeout\n");
++        return -1;
++    }
+ 
+     err = lapic->error_status.r;
+     if (err) {
+@@ -142,8 +158,10 @@ smp_send_ipi_startup_twice(int bsp_apic_id, int vector)
+         pit_udelay(10);
+ 
+         /* Wait for other cpu to accept IPI */
+-        wait_for_ipi();
+-        send_err = lapic->error_status.r;
++        if (wait_for_ipi() != 0)
++            send_err = -1;
++        else
++            send_err = lapic->error_status.r;
+ 
+         pit_udelay(10);
+ 
+@@ -190,13 +208,14 @@ int smp_startup_cpus(unsigned bsp_apic_id, phys_addr_t start_eip)
+ 
+     printf("Sending IPIs from BSP APIC ID %u...\n", bsp_apic_id);
+ 
+-    smp_send_ipi_init(bsp_apic_id);
+-    err = smp_send_ipi_startup_twice(bsp_apic_id, start_eip >> STARTUP_VECTOR_SHIFT);
++    err = smp_send_ipi_init(bsp_apic_id);
++    if (!err)
++        err = smp_send_ipi_startup_twice(bsp_apic_id, start_eip >> STARTUP_VECTOR_SHIFT);
+     if (err) {
+-        printf("FATAL: APs failed to start\n");
+-        while(1) {
+-            cpu_pause();
+-        }
++        /* Do not hang the machine: APs are still experimental, fall back
++         * to the BSP so the boot can continue (e.g. QEMU -smp 2). */
++        printf("SMP: APs failed to start (err 0x%x), continuing with BSP only\n", err);
++        return -1;
+     }
+     printf("done\n");
+     return 0;
+-- 
+2.47.3
+

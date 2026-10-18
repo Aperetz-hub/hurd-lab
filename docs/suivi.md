@@ -1143,6 +1143,186 @@ Remaining `rust` mentions after the removal, all intentional:
 `docs/roadmap-riscv-rust.md` was renamed to `docs/roadmap-riscv.md` and its
 Rust sections (§2.2, §4) were deleted; the RISC-V material was renumbered.
 
+## Upstream submission preparation (18/10/2026)
+
+Nothing was sent outside this repository. No mail, no upstream push, no bug
+report. `upstream/` holds patches in `git format-patch` output, one directory
+per submission, each with a `COVER-NOTE.md`.
+
+### Contribution procedure — what was actually verified, and where
+
+| rule | source (read 2026-10-18) |
+|---|---|
+| `git send-email -1 --to=bug-hurd@gnu.org` is "the easiest way to send patches" | `gnu.org/software/hurd/contributing/developer-workflows.html`, section "Sending Patches" |
+| `--rfc` gives `[RFC PATCH]`; a re-roll gets `-v2`, `-v3`, ... | same page |
+| a series should use `git format-patch --cover-letter`, then `git send-email *.patch` | same page |
+| "It's oftentimes a good idea to give an overview of a patch series" | same page |
+| "It is a good idea to cc the people who wrote or last changed the part of code you are changing." | same page |
+| no Savannah membership is required to contribute; use the mailing lists | `gnu.org/software/hurd/rules/savannah_group.html` |
+| `bug-hurd@gnu.org` is "Technical discussion and bug reports; main development list. If you want to contribute, please meet us here." | `gnu.org/software/hurd/mailing_lists.html` |
+
+**No copyright-assignment requirement could be verified.** The site's `Rules`
+section (`gnu.org/software/hurd/rules.html`) lists exactly two pages, source
+repositories and the Savannah group, and neither states one. The only
+copyright-assignment mention found anywhere on the site is on the *Artwork*
+page, and it concerns artwork, not code. No DCO rule and no patch-format rule
+beyond `git format-patch` was found either.
+
+The three source trees on this machine (`src/gnumach`, `src/hurd`,
+`src/mig`) contain **no** `HACKING`, `CONTRIBUTING` or `HACKING`-like file
+(checked with `find src -maxdepth 2 -iname 'HACKING*' -o -iname 'CONTRIBUT*'`
+— no output). Their `README` files only point at `bug-hurd@gnu.org` and the
+Savannah bug tracker.
+
+The four repositories named by the site's own pages all answer HTTP 200:
+`hurd/hurd.git`, `hurd/gnumach.git`, `hurd/mig.git`, `hurd/incubator.git`
+(checked with `curl -sL -o /dev/null -w '%{http_code}'`).
+
+### FACT — inventory, and where each candidate stands
+
+Upstream tips used for every "applies cleanly" statement below, fetched this
+session with `git fetch origin`:
+
+| project | mirror used | tip | date |
+|---|---|---|---|
+| `hurd/gnumach` | `git.sceen.net/hurd/gnumach.git` | `79e98e8b` "Fix copyrights" | 2026-10-12 |
+| `hurd/hurd` | `git.sceen.net/hurd/hurd.git` | `ccaa5374` "ext2fs: Write JBD2 revoke records for freed blocks" | 2026-10-13 |
+
+| candidate | origin commit | destination | applies on current master? | built? | run? |
+|---|---|---|---|---|---|
+| maxcpus/N + nosmp boot option | `a4237652` | gnumach | yes, alone | yes | option exercised on the fork (2/2 BOOT, `nproc=1`) |
+| do not disable the BSP LAPIC | `4207ebda` | gnumach | yes, alone | yes | yes, see below |
+| do not hang the boot on AP failure | `99a21a39` | gnumach | yes, **after** `99a21a39`'s predecessor — see dependency note | yes | yes, same kernel |
+| propagate the degradation | `c11e6cea` | gnumach | only after `99a21a39` (verified: fails alone, applies after) | yes | yes, same kernel |
+| `bpf_hdr` sec/usec order | `1e025470` | hurd | yes, alone | **no** | no |
+| `login` utmp Y2038 saturation | `b6ec77a4` | hurd | yes, alone | yes (in the guest) | yes (the hunk, run) |
+| rumpnet links `pcn` too | `515defcb` | hurd | yes, alone | **no** | no |
+
+The dependency is real and was measured, not guessed: `git apply --check`
+of `c11e6cea` against a clean `origin/master` fails
+(`i386/i386/mp_desc.c:323`), and the same patch applies immediately after
+`99a21a39`. In the exported series the order is `4207ebda`, `99a21a39`,
+`c11e6cea`, which is also verified to apply in that order.
+
+The exported patches were re-checked with `git am` (not `git apply`) on
+fresh worktrees of the two upstream tips: the 3-patch gnumach series, the
+1-patch gnumach series and the three 1-patch hurd series all apply cleanly.
+
+### FACT — the gnumach SMP series, built and booted on upstream master
+
+Both kernels were built **from the same upstream commit `79e98e8b`** on this
+machine, with the same commands, so the pair is a real before/after:
+
+```
+autoreconf -i
+./configure --host=x86_64-pc-gnu --enable-ncpus=2
+make gnumach MIG=$HOME/.local/mig/bin/mig      # make exit=0, both times
+```
+
+(`mig` had to be built first: `src/mig` at `cb48044`, installed in
+`$HOME/.local/mig`, built with
+`make TARGET_CPPFLAGS="-I/home/ben/hurd-fork/hurd-headers/x86_64-gnu -I/home/ben/hurd-fork/hurd-headers/usr"`
+because its `cpu.symo` rule preprocesses a file that includes
+`<mach/message.h>`.)
+
+Both kernels were installed into **separate disposable overlays**
+(`ovl-up-gnumach.qcow2` and `ovl-up-base.qcow2`, each a fresh copy made by
+`vm/install-kernel.sh`; the fork master overlay and the dev disk were not
+touched) and run with `vm/trials-smp.sh` under `vm/run-hurd64-smp.sh`
+(`-m 4096`, QEMU q35, KVM):
+
+| kernel | `-smp 2` | `-smp 1` |
+|---|---|---|
+| `origin/master` `79e98e8b`, unpatched (gz md5 `da4aae72…`) | **0/3 BOOT**, 3 × WEDGE | 2/2 BOOT, `nproc=1` |
+| `origin/master` + the 3 patches (gz md5 `c6a15338…`) | **3/3 BOOT**, `nproc=2` | 2/2 BOOT, `nproc=1` |
+
+On every BOOT round the harness reads `nproc` and
+`md5sum /boot/gnumach-1.8-amd64-up.gz` over SSH inside the guest, and the md5
+matched the uploaded kernel in every case, so the kernel that booted is the
+one that was built from the patched tree.
+
+### FACT — the hurd `login` patch, compiled and run in the guest
+
+The whole `utils/login.c` cannot be compiled on this guest, because the
+installed Hurd `libc0.3-dev 2.43-7` header set does not compile as a whole:
+`<hurd.h>` pulls in `/usr/include/mach/mach_host.h`, which fails with
+
+```
+/usr/include/mach/mach_host.h:538:9: error: unknown type name
+'processor_name_array_t'; did you mean 'processor_set_name_array_t'?
+/usr/include/mach/mach_host.h:1092:9: error: unknown type name
+'processor_name_array_t'; did you mean 'processor_set_name_array_t'?
+```
+
+This is pre-existing and not caused by the patch: compiling the **unpatched**
+`utils/login.c` from upstream `master` with the identical command line gives
+the same 2 errors and nothing else.
+
+The patched hunk was therefore isolated against the guest's real types,
+compiled with `-Wall -Wextra` (no warning) and executed:
+
+```
+INT32_MAX = 2147483647
+tv_sec=1700000000  old=1700000000  new=1700000000
+tv_sec=2147483648  old=-2147483648  new=2147483647
+tv_sec=4102444800  old=-192522496  new=2147483647
+```
+
+Measured on the same guest, which is what makes the premise true:
+
+```
+sizeof(utmp.ut_tv)     = 8      (two 32-bit fields)
+sizeof(struct timeval) = 16     (two 64-bit fields)
+```
+
+### FACT — what is on the rump/NetBSD side
+
+There is **nothing to submit to rump or NetBSD**. Verified this session:
+
+- the NetBSD tree on this machine (`$HOME/nbsrc25`, the tree
+  `patches/build/build-virtio.sh` needs) **does not exist**; no `sys/rump`
+  directory exists anywhere under `/home/ben`;
+- `libvirtio_if_vioif` and `libpci_virtio` are NetBSD's own files, not
+  ours: the contents of `sys/rump/dev/lib` on the NetBSD `trunk` branch
+  include `libpci_if_iwn`, `libpci_if_pcn`, `libpci_if_wm`, `libpci_virtio`,
+  `libvirtio_if_vioif`, `libvirtio_ld`, `libvirtio_viornd`,
+  `libvirtio_vioscsi`;
+- the `curlwp` / `%gs` crash was a defect of *our build recipe*, not of rump:
+  NetBSD's `sys/rump/Makefile.rump` already puts the rump include directory
+  first and defines `-D_RUMPKERNEL`, which is what makes
+  `curlwp == rump_curlwp_fast()` instead of the `%gs`-based
+  `x86_curlwp()`. The fix lives in `patches/build/build-virtio.sh` of this
+  repository and is documented, not submitted.
+
+So the two rumpnet patches here are both **Hurd** changes (`rumpnet/Makefile`,
+`rumpnet/net-rump.c` are in `hurd/hurd`), and they are kept in separate
+directories because they are unrelated fixes.
+
+### PLAUSIBLE HYPOTHESIS
+
+The `bpf_hdr` sec/usec swap is very likely a real defect rather than a
+cosmetic one, because NetBSD's `sys/net/bpf.h` was read directly and declares
+`struct bpf_timeval { long tv_sec; long tv_usec; }` as the first member of
+`struct bpf_hdr`. What has **not** been established is that anything ever
+reads that timestamp back on the Hurd; nothing in the tree does today, which
+is why the bug is latent rather than observable.
+
+### SPECULATION
+
+Whether upstream would prefer the `maxcpus`/`nosmp` option as a kernel
+boot-line option, as a `configure` option, or not at all, is not something
+this session can determine. It is offered as a boot-line option because that
+is what was built and measured here.
+
+### Left for the owner
+
+- add `Signed-off-by:` with a real identity to all six patches (deliberately
+  omitted here: the identity is the sender's, not this repository's);
+- review the two `rumpnet` patches knowing they were not built;
+- decide the submission order and whether to send the three gnumach SMP
+  patches as one series or patch 1 alone;
+- actually send them. This session did not.
+
 ## Disk safety (permanent rules)
 
 - **Never** boot `debian-hurd-amd64-*.img` in write mode.
