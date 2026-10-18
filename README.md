@@ -24,23 +24,32 @@ Experimental fork of GNU/Hurd (64-bit) with two goals:
     `eth0`/netdde kept as fallback (not auto).
   - **`-m 4G` is mandatory**: with 2 GB the driver does not attach
     (`virtio0: virtqueue 0 for rx0 allocation failed, error code 1`).
+  - **Validated together with SMP**: `-smp 2` with `vioif0` up passes traffic
+    and holds its clock under a 60 s concurrent MP workload (18/10/2026).
   - **Do not hot-switch**: `ifconfig /dev/eth0 down` with rumpnet active
     freezes the machine (IRQ 11 unacknowledged, network + console dead,
     reboot required) → `scripts/net-switch-vioif.sh` is **locked**.
   - `glibc ≥ 2.43` required by the rump binaries.
-- **SMP: fixed, still experimental.** `-smp 2` used to hang in the AHCI
-  attach of the **`rumpdisk`** translator (`ahcisata0: 64-bit DMA`). Root
+- **SMP: fixed, and now exercised under load.** `-smp 2` used to hang in the
+  AHCI attach of the **`rumpdisk`** translator (`ahcisata0: 64-bit DMA`). Root
   cause: `start_other_cpus()` disabled the BSP's own local APIC while the APs
   were coming up, so the master CPU stopped receiving its 100 Hz tick; since
   `clock_interrupt()` advances time, timeouts and preemption only on the
   master CPU, the whole system clock froze and `rumpdisk` waited forever.
   Commit `4207ebda` (`fork/x86_64`) removes that window. Verified 18/10/2026:
   `-smp 2` boots **3/3** with `nproc = 2`, `-smp 1` boots 2/2, and
-  `maxcpus=1` on the unfixed kernel still boots 2/2. Full autopsy and the
-  measurements behind it: `docs/suivi.md` § *Autopsy of the `-smp 2` hang*
-  and § *5th/6th pass*. **Not yet shown**: that the AP does useful work — no
-  MP workload has been run, so "fixed" means "boots and stays usable with two
-  CPUs", not "SMP is correct".
+  `maxcpus=1` on the unfixed kernel still boots 2/2.
+  **Under load** (18/10/2026, `vm/smp-stress-run.sh`): with `-smp 2` and
+  `vioif0` up, a 60 s window running two CPU-bound workers (one pinned to the
+  slave processor set through `/sbin/smp`), continuous rumpdisk I/O and
+  continuous ICMP over `vioif0` completed with **0 % packet loss**, both
+  workers doing ~11 G iterations, and the **100 Hz clock never froze**:
+  6115 ticks in 61.140 s of host time, i.e. **100.017 ticks/s**, and the
+  kernel's own `uptime` tracked the host clock to 0.017 %. Full measurements
+  in `docs/suivi.md` § *SMP + vioif0 MP stress test*.
+  **Still not shown**: that the Hurd userland is SMP-*correct*. Two CPUs run
+  concurrent work and the clock holds, but no MP workload of the user's own
+  was run, and the AP is not exercised for anything but that.
 
 > **History.** The dev VM disk was corrupted on 17/10
 > (re-extracting the base image while an overlay was in service) then
@@ -58,7 +67,9 @@ messages.
   Work happens on `fork/x86_64` branches (pushed as-is to GitHub,
   see below).
 - `vm/` — QEMU scripts (`-M q35`; e1000 + pcnet + virtio-net; SSH
-  localhost:2222 e1000 / :2223 virtio).
+  localhost:2222 e1000 / :2223 virtio), the SMP trial harness, the kernel
+  thermometer (`kprobe.py`) and the SMP + vioif0 MP stress harness
+  (`smp-stress-run.sh`).
 - `patches/` — consolidated patches + rump build tooling (virtio) and the
   SMP test kernel (`gnumach-smp-test`, ELF with `debug_info`).
 - `scripts/` — vioif boot integration: `start-rumpnet.sh`,

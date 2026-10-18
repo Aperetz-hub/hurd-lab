@@ -1321,6 +1321,161 @@ is what was built and measured here.
   patches as one series or patch 1 alone;
 - actually send them. This session did not.
 
+## SMP + vioif0 MP stress test (18/10/2026)
+
+This closes the two items the 6th pass left open: whether `-smp 2` with
+`vioif0` boots and passes traffic, and whether both CPUs do concurrent work
+under load without wedging `rumpdisk`, `rumpnet` or the master clock.
+
+### FACT — the setup
+
+- The kernel under test was built from the fork branch `fork/x86_64` at
+  `4207ebda` ("smp: do not disable the BSP local APIC while starting the APs"),
+  with `--host=x86_64-pc-gnu --enable-ncpus=2`. Its compressed image has
+  md5 `ef48c06764b054f35cd1d06dfc495828`; the ELF with symbols, used by
+  `vm/kprobe.py`, is `/tmp/gnumach-fork-4207ebda`.
+- The guest is a **full copy** of the dev disk
+  (`cp hurd-dev.qcow2 hurd-smp-vioif-test.qcow2`), so the dev disk was never
+  opened for writing and never even used as a backing file. Its mtime is
+  unchanged (17/10 13:51), as is `ovl-fork-master.qcow2` (17/10 22:50) and
+  `debian-hurd-amd64-20260314.img` (24/03/2026).
+- The guest already carried the `vioif0` configuration: `/etc/network/interfaces`
+  with `auto /dev/vioif0` and `pre-up /usr/local/sbin/start-rumpnet.sh`, the
+  `rumpnet-vioif-test` translator and the `devnode` on `/dev/vioif0`.
+- QEMU: `-m 4096 -M q35 --enable-kvm -smp 2`, with an e1000 (SSH on 2222) and
+  a `virtio-net-pci` (SSH on 2223). The guest is reached over the virtio
+  device, which is the one `vioif0` runs on.
+
+**FACT.** The guest at `-smp 2`:
+
+```
+$ ssh -p 2223 demo@127.0.0.1 'nproc; sudo -n md5sum /boot/gnumach-1.8-amd64-up.gz'
+2
+ef48c06764b054f35cd1d06dfc495828  /boot/gnumach-1.8-amd64-up.gz
+$ ssh -p 2223 demo@127.0.0.1 'ifconfig /dev/vioif0'
+/dev/vioif0 (2):
+  inet address  10.0.2.15
+  netmask       255.255.255.0
+  ...
+  flags UP BROADCAST RUNNING ALLMULTI MULTICAST
+  hardware addr 52:54:00:12:34:57
+```
+
+So `-smp 2` **and** `vioif0` boot together on the patched kernel. Before the
+stress, traffic over `vioif0` was checked on its own: 3/3 packets to the
+gateway `10.0.2.2` and 3/3 to `8.8.8.8`, 0 % loss.
+
+### FACT — the workload
+
+`vm/smp-stress-run.sh` boots the disposable overlay, checks the guest, and
+runs `vm/smp-stress.sh` inside it for 60 s. Four things run at once:
+
+| component | what it does |
+|---|---|
+| worker A | a CPU-bound loop (`vm/smp-stress-burn.c`) on the master processor set |
+| worker B | the same program on the **slave** processor set, via `sudo /sbin/smp` |
+| disk I/O | 60 rounds of write 256 KiB + `fsync` + read back, on the rumpdisk-backed root filesystem |
+| network | `ping` to the gateway every 0.2 s and to `8.8.8.8` every 0.5 s, over `vioif0` |
+
+The slave worker is the interesting one: `/sbin/smp` is setuid root and
+assigns the task to the slave processor set, so worker B really runs on the
+second CPU rather than merely being eligible for it.
+
+### FACT — the results (60 s window, `-smp 2`, `vioif0` up)
+
+Two independent runs, the second with the improved clock sampler:
+
+| measurement | run 1 | run 2 |
+|---|---|---|
+| worker A (master) | 11 060 500 000 iterations in 60.00 s | 11 300 290 000 iterations in 60.00 s |
+| worker B (slave) | 11 778 440 000 iterations in 60.00 s | 11 812 380 000 iterations in 60.00 s |
+| rumpdisk write+sync+read rounds | 60 | 60 |
+| ping to the gateway | 283 sent, 282 received, **0 % loss** | 287 sent, 286 received, **0 % loss** |
+| ping to `8.8.8.8` | 117 sent, 117 received, **0 % loss** | 118 sent, 118 received, **0 % loss** |
+| load average at the end | 2.12 2.04 1.68 | 1.97 2.04 1.65 |
+
+Both workers ran the full 60 s and both did substantial work. The slave did
+about 5 % *more* iterations than the master, in both runs; the master also
+carries the kernel-side work of the stress (the rumpnet translator, `pfinet`,
+the ext2fs), which is the obvious candidate for the difference, but that was
+not measured.
+
+### FACT — the clock did not freeze
+
+The kernel clock was sampled from the outside, through the QEMU monitor, with
+`vm/kprobe.py`, which reads the kernel globals straight out of guest memory.
+Every sample is stamped with the **host** wall clock, which is completely
+independent of the guest, so the difference between two samples is a
+reliable time base.
+
+```
+label      host time             ticks     uptime
+before     1792316254.110         2246      22.46
+during-1   1792316264.196         3256      32.56
+during-2   1792316274.296         4272      42.72
+during-3   1792316284.477         5284      52.84
+during-4   1792316294.595         6298      62.99
+during-5   1792316304.738         7312      73.12
+during-6   1792316314.867         8322      83.22
+after      1792316315.250         8361      83.61
+
+WHOLE WINDOW: dhost=61.140 s  dticks=6115  duptime=61.15 s
+  tick rate  = 100.017 ticks/s  (nominal 100)
+  uptime/host= 1.00017
+  ticks per uptime second = 100.0000
+```
+
+Per interval, the tick rate was 100.148, 99.904, 99.982, 100.526, 99.922
+and 99.858 ticks/s. There is no interval in which the clock stopped.
+
+**FACT.** A second, independent trace was taken *inside* the guest, by
+`vm/smp-stress-clock.c`, which samples three clocks in a tight loop with no
+forks: the C library's `CLOCK_MONOTONIC`, `CLOCK_REALTIME`, and the kernel's
+own `/proc/uptime`. Over 551 samples at 9.1 Hz:
+
+```
+CLOCK_MONOTONIC span = 60.5750 s
+CLOCK_REALTIME  span = 60.5750 s
+kernel uptime   span = 60.5700 s
+uptime/monotonic (aggregate) = 0.999917
+the kernel uptime never stopped advancing
+```
+
+**FACT.** The first version of the in-guest sampler was a shell loop that
+ran `date` and `cat /proc/uptime` once a second. Its trace was **not** used,
+because it was measuring its own overhead: a fork and an exec under that load
+cost tens of milliseconds, and the resulting ratios swung between 0.54 and
+1.14. The per-sample scatter that remains in the fork-free trace (0.75 to
+1.30 between consecutive samples) has the same origin, since the sampler
+reads the clocks *around* the `/proc/uptime` read and a slow read shifts the
+pairing; the aggregate over 551 samples is the meaningful figure.
+
+### PLAUSIBLE HYPOTHESIS
+
+- The slave worker doing ~5 % more work than the master is consistent with
+  the master carrying the kernel-side work of the stress (rumpnet, `pfinet`,
+  the ext2fs writes) on top of its own burner. This was not measured: the
+  per-CPU time was not broken out.
+- The absence of any packet loss is consistent with the rumpnet path keeping
+  up with the offered load, but the offered load was 5 packets per second to
+  the gateway. A much heavier network load was not tried.
+
+### SPECULATION
+
+Nothing is claimed about the correctness of the Hurd userland under SMP. Two
+CPUs ran concurrent work and the clock held; that is not the same as the
+userland being race-free. The same caveat as before applies: no MP workload
+of the user's own was run, and the AP was not exercised beyond this.
+
+### What is still open
+
+- Whether a *heavy* network load (saturating the virtio queues) keeps
+  `rumpnet` and the master clock healthy; 5 packets per second does not.
+- Whether the slave CPU keeps its 100 Hz tick of its own, or whether the
+  tick is genuinely master-only as the design implies.
+- Whether the ext2fs/rumpdisk path is safe under a much larger write
+  volume than 15 MiB per minute.
+
 ## RISC-V skeleton: milestone 3, physical memory and the Sv39 MMU (18/10/2026)
 
 Follows the milestone 1 and 2 entries above; the toolchain, the SBI
