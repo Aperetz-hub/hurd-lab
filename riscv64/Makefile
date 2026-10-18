@@ -1,59 +1,100 @@
 # Build/run tooling for the bare-metal rv64gc kernel skeleton.
 #
-# Everything is driven by cargo; this Makefile only wraps the commands that are
-# awkward to type, so `make` and `cargo build` never disagree about flags (those
-# live in .cargo/config.toml and rust-toolchain.toml).
+# The kernel is freestanding C plus one assembly trampoline, built with the
+# GNU cross toolchain, exactly like GNU Mach itself: gcc, gas, ld, make.
+# There is no other build system involved.
 #
-#   make check    verify the toolchain is present (fails early, readably)
-#   make build    release ELF into target/
-#   make build-std  same, but rebuild core from source (-Z build-std)
-#   make run      boot it under qemu-system-riscv64 (headless, serial on stdio)
-#   make debug    boot it stopped on the OpenSBI debug server (:3333)
-#   make disasm   dump the image layout and the entry point
+#   make check      verify the toolchain is present (fails early, readably)
+#   make build      release ELF into build/
+#   make run        boot it under qemu-system-riscv64 (headless, serial on stdio)
+#   make verify     boot at -smp 1..4 and check the milestone banner appears
+#   make debug      boot it stopped, so a debugger can attach first
+#   make disasm     dump the image layout and the first instructions
 #   make clean
 
-TARGET      := riscv64gc-unknown-none-elf
-PROFILE     ?= release
-BIN         := target/$(TARGET)/$(PROFILE)/hurd-riscv64-boot
-QEMU        ?= qemu-system-riscv64
-MEM         ?= 256M
-CARGO       ?= cargo
+CROSS      ?= riscv64-linux-gnu-
+CC         := $(CROSS)gcc
+OBJCOPY    := $(CROSS)objcopy
+OBJDUMP    := $(CROSS)objdump
+READELF    := $(CROSS)readelf
+QEMU       ?= qemu-system-riscv64
+MEM        ?= 256M
 
-# The host binutils cannot disassemble RISC-V ("cannot disassemble for
-# architecture UNKNOWN"), and readelf localises its output, so "grep -i
-# 'entry point'" only matches under LC_ALL=C. Prefer the cross binutils and
-# fall back to the host ones; LC_ALL=C keeps the grep locale-independent.
-READELF     ?= $(shell command -v riscv64-linux-gnu-readelf 2>/dev/null || command -v readelf)
-OBJDUMP     ?= $(shell command -v riscv64-linux-gnu-objdump 2>/dev/null || command -v objdump)
+BUILD      := build
+BIN        := $(BUILD)/hurd-riscv64-boot.elf
+LD_SCRIPT  := linker/riscv64-virt.ld
+
+# readelf localises its output ("Point d'entrée" here), so the "entry point"
+# grep in `disasm` only matches under a fixed locale.
 export LC_ALL = C
 
-.PHONY: all check build build-std run debug disasm clean
+# rv64gc, doubles and long doubles enabled, so the ABI matches the string the
+# banner prints. medany because the image lives at 0x8020_0000, above the
+# signed 2 GiB reach of the medlow default.
+ARCHFLAGS := -march=rv64gc -mabi=lp64d -mcmodel=medany
+
+# Freestanding: no libc, no start files, no builtins the compiler would expect
+# to be able to call, no PIC (the image is linked at a fixed address), and no
+# unwind tables (there is no unwinder to consume them).
+CFLAGS := $(ARCHFLAGS) \
+	-std=gnu11 -O2 -g \
+	-ffreestanding -nostdlib -nostartfiles \
+	-fno-builtin -fno-common -fno-pic -fno-pie -no-pie \
+	-fno-asynchronous-unwind-tables -fno-unwind-tables \
+	-fno-stack-protector -fno-strict-aliasing \
+	-Wall -Wextra \
+	-Iinclude
+
+ASFLAGS := $(ARCHFLAGS) -g -Iinclude
+
+# The linker script replaces the default layout, which assumes an OS loader.
+# --gc-sections drops everything the entry point does not reach.
+LDFLAGS := $(ARCHFLAGS) -nostdlib -no-pie -static \
+	-T $(LD_SCRIPT) -Wl,--gc-sections \
+	-Wl,-Map,$(BUILD)/hurd-riscv64-boot.map
+
+SRCS_C := src/main.c src/console.c src/sbi.c src/uart.c
+SRCS_S := src/boot.S
+OBJS   := $(SRCS_C:%.c=$(BUILD)/%.o) $(SRCS_S:%.S=$(BUILD)/%.o)
+
+# The banner the milestone is defined by; `make verify` greps for it.
+BANNER := hurd-riscv64: milestone 1 reached, halting
+
+.PHONY: all check build run verify debug disasm clean
 
 all: build
 
 check:
 	@echo "== toolchain =="
-	@command -v rustup   >/dev/null || { echo "MISSING: rustup (https://rustup.rs)"; exit 1; }
-	@command -v rustc    >/dev/null || { echo "MISSING: rustc"; exit 1; }
-	@command -v $(CARGO) >/dev/null || { echo "MISSING: cargo"; exit 1; }
-	@command -v $(QEMU)  >/dev/null || { \
-		echo "MISSING: $(QEMU)  ->  sudo apt install qemu-system-misc"; exit 1; }
-	@echo "rustc  : $$(rustc --version)"
-	@echo "cargo  : $$($(CARGO) --version)"
-	@echo "target : $$(rustc --print target-list | grep -c '^$(TARGET)$$') installed? (see make build)"
-	@echo "qemu   : $$($(QEMU) --version | head -1)"
+	@command -v $(CC) >/dev/null || { echo "MISSING: $(CC) -> install gcc-riscv64-linux-gnu"; exit 1; }
+	@command -v $(QEMU) >/dev/null || { echo "MISSING: $(QEMU) -> install qemu-system-misc"; exit 1; }
+	@command -v $(OBJDUMP) >/dev/null || { echo "MISSING: $(OBJDUMP)"; exit 1; }
+	@command -v $(READELF) >/dev/null || { echo "MISSING: $(READELF)"; exit 1; }
+	@echo "cc      : $$($(CC) --version | head -1)"
+	@echo "as/ld   : $$($(CROSS)ld --version | head -1)"
+	@echo "qemu    : $$($(QEMU) --version | head -1)"
+	@echo "target  : $$($(CC) -dumpmachine)"
 	@echo "OK"
 
-build:
-	$(CARGO) build --profile $(PROFILE)
-	@echo "built: $(BIN)"
+$(BUILD)/%.o: %.c | $(BUILD)/.stamp
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c -o $@ $<
 
-# Rebuild core/compiler_builtins from source. Only needed on a toolchain that
-# ships no prebuilt core for this target, or when hacking on core itself.
-build-std:
-	$(CARGO) +nightly build -Z build-std=core,compiler_builtins \
-		-Z build-std-features=compiler-builtins-mem --profile $(PROFILE)
-	@echo "built: $(BIN)"
+$(BUILD)/%.o: %.S | $(BUILD)/.stamp
+	@mkdir -p $(dir $@)
+	$(CC) $(ASFLAGS) -c -o $@ $<
+
+# The phony target is also called `build`, so the directory is created through a
+# stamp file rather than a `build:` rule, which make would treat as circular.
+$(BUILD)/.stamp:
+	@mkdir -p $(BUILD)
+	@touch $@
+
+build: $(BIN)
+
+$(BIN): $(OBJS) $(LD_SCRIPT)
+	$(CC) $(LDFLAGS) -o $@ $(OBJS) -lgcc
+	@echo "built: $@"
 
 # Headless by design, matching AGENTS.md rule 2 (no GUI anywhere in this lab).
 # -nographic multiplexes the UART onto stdio; -bios default is QEMU's bundled
@@ -63,6 +104,36 @@ run: build
 	$(QEMU) -machine virt -m $(MEM) -nographic -no-reboot \
 		-bios default \
 		-kernel $(BIN)
+
+# Boot the milestone at every hart count the board supports and require the
+# banner exactly once per run: more than once would mean a second hart ran
+# the kernel. Each count is booted several times, because the boot hart that
+# the firmware picks is not always the same one, and a single run per count
+# does not exercise that.
+ROUNDS ?= 3
+
+verify: build
+	@fail=0; \
+	for n in 1 2 3 4; do \
+		ok=0; \
+		for i in $$(seq 1 $(ROUNDS)); do \
+			out=$$(timeout 30 $(QEMU) -machine virt -m $(MEM) -nographic \
+				-no-reboot -smp $$n -bios default -kernel $(BIN) 2>&1); \
+			got=$$(printf '%s\n' "$$out" | grep -c '$(BANNER)'); \
+			if [ "$$got" = 1 ]; then ok=$$((ok+1)); else \
+				printf '  -smp %s : FAIL on round %s, banner x%s\n' \
+					"$$n" "$$i" "$$got"; \
+			fi; \
+		done; \
+		if [ "$$ok" = $(ROUNDS) ]; then \
+			printf '  -smp %s : BOOT, banner x1 on %s/%s runs\n' \
+				"$$n" "$$ok" "$(ROUNDS)"; \
+		else \
+			printf '  -smp %s : FAIL, %s/%s runs\n' "$$n" "$$ok" "$(ROUNDS)"; \
+			fail=1; \
+		fi; \
+	done; \
+	exit $$fail
 
 # Start stopped so a debugger can attach before the first instruction.
 # OpenSBI exposes the debug spec on TCP 3333; gdb-multiarch speaks the same
@@ -83,4 +154,4 @@ disasm: build
 	@$(OBJDUMP) -d $(BIN) | sed -n '/<_start>:/,/^$$/p' | head -40
 
 clean:
-	$(CARGO) clean
+	rm -rf $(BUILD)

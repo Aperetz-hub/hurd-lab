@@ -3,15 +3,17 @@
  *
  * Layout facts that matter:
  *   - QEMU's `virt` board maps DRAM at 0x8000_0000.
- *   - OpenSBI occupies the first megabyte or so; `cargo build` output is handed
- *     to QEMU with `-kernel`, which places it at 0x8020_0000. That address is
+ *   - OpenSBI occupies the first megabyte or so; the kernel ELF is handed to
+ *     QEMU with `-kernel`, which loads it at 0x8020_0000. That address is
  *     therefore the script's ORIGIN.
  *   - The kernel is a flat image: no MMU, no demand paging, no relocation.
  *     Absolute (and gp-relative) addressing are enough for the first milestones.
  *
  * `__bss_start` / `__bss_end` and `__stack_top` are consumed by the `_start`
- * trampoline in `src/boot.rs`; `__global_pointer$` is the gp base that the same
+ * trampoline in `src/boot.S`; `__global_pointer$` is the gp base that the same
  * trampoline loads with `la gp, __global_pointer$`.
+ *
+ * Built with `riscv64-linux-gnu-gcc -nostdlib -T linker/riscv64-virt.ld`.
  */
 
 OUTPUT_ARCH(riscv)
@@ -67,8 +69,8 @@ SECTIONS
 
     /*
      * Boot stack. 64 KiB is generous for a freestanding kernel and costs
-     * nothing until something actually uses it; no_initramfs-style garbage
-     * collection will want to grow this.
+     * nothing until something actually uses it; a future allocator will want
+     * to grow this.
      */
     . = ALIGN(4096);
     __stack_bottom = .;
@@ -79,8 +81,8 @@ SECTIONS
 
     /*
      * Without this, any unwind table or eh_frame section the toolchain emits
-     * gets an address in the image but no way to be used (panic=abort, no
-     * personality routine), and some linkers then complain.
+     * gets an address in the image but no way to be used (no libgcc unwinder,
+     * no personality routine), and some linkers then complain.
      */
     /DISCARD/ : {
         *(.eh_frame)

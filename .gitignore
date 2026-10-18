@@ -7,6 +7,5 @@
 *.ppm
 *.out
 
-# Cargo build output of the riscv64/ workspace.
-target/
-**/target/
+# Build output of the riscv64/ kernel (see riscv64/Makefile).
+riscv64/build/

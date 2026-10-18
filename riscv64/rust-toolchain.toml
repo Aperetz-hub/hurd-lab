@@ -1,9 +1,0 @@
-[toolchain]
-# Nightly: the RISC-V bring-up uses `-Z build-std=core,compiler_builtins`, which
-# is still unstable. Everything in this directory also builds on a recent
-# *stable* toolchain, because `core` is shipped prebuilt for
-# `riscv64gc-unknown-none-elf`; see README.md ("Toolchain notes").
-channel = "nightly"
-components = ["rust-src", "rustfmt", "clippy"]
-targets = ["riscv64gc-unknown-none-elf"]
-profile = "minimal"
