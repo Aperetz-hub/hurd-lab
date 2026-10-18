@@ -22,9 +22,13 @@ _start:
      * Park every hart but hart 0. QEMU's `virt` board powers one hart by
      * default (`-smp 1`), so this loop normally falls through immediately; with
      * more harts it keeps them from racing into the kernel before it is ready.
+     *
+     * The hart id arrives in `a0`, which is what the SBI boot protocol defines
+     * for the S-mode entry point.  Do NOT read `mhartid` here: it is a
+     * machine-mode CSR and reading it from S-mode raises an illegal
+     * instruction exception, so the hart traps before it can say anything.
      */
-1:  csrr    t0, mhartid
-    bnez    t0, 1b
+1:  bnez    a0, 1b
 
     /*
      * gp must be valid before any gp-relative access. norelax is mandatory:

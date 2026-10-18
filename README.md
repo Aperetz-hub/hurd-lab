@@ -64,7 +64,10 @@ messages.
 - `scripts/` — vioif boot integration: `start-rumpnet.sh`,
   `interfaces.vioif`, `net-switch-vioif.sh`.
 - `riscv64/` — **experimental**: bare-metal `rv64gc` kernel skeleton for the
-  QEMU `virt` board (OpenSBI + SBI console). Blueprint; not built yet.
+  QEMU `virt` board (OpenSBI + SBI console). **Built and booted** 18/10/2026:
+  milestone 1 (console up + SBI handshake) runs on QEMU 10.0.13 `virt`. See
+  `riscv64/README.md` and `docs/suivi.md` for what was measured and what is
+  still unknown.
 - `upstream/` — patches **prepared** for the GNU/Hurd project, one directory
   per submission (`gnumach` and `hurd` targets), each with a cover note
   giving the problem, the cause, the exact test commands and results, and the

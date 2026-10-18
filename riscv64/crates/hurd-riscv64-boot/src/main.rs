@@ -48,7 +48,22 @@ fn putdec(mut value: u64) {
 /// Diverges: there is nothing to return to.
 #[no_mangle]
 pub extern "C" fn kmain() -> ! {
+    // `_start` reaches us by `call kmain`, which leaves `a0` untouched, and
+    // `a0` is the hart id the SBI boot protocol passes at S-mode entry (see
+    // boot.rs). It has to be captured *first*: any function call, including
+    // `console::init()` below, is free to clobber `a0`.
+    let hartid: u64;
+    // SAFETY: `mv` into a fresh local register; no memory, flags or stack effect.
+    unsafe {
+        core::arch::asm!("mv {}, a0", out(reg) hartid, options(nomem, nostack, preserves_flags));
+    }
+
     console::init();
+
+    // Printing it is how "a0 is the hart id" is checked rather than assumed.
+    console::puts("SBI hart id ");
+    console::puthex(hartid);
+    console::puts("\r\n");
 
     // SBI legacy console, bypassing the UART, to prove the firmware path is
     // alive. Harmless if the firmware dropped the extension: SBI returns a

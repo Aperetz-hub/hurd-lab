@@ -28,7 +28,7 @@ static UART: Uart = Uart::new();
 pub fn init() {
     UART.init();
     UART_READY.store(true, core::sync::atomic::Ordering::Release);
-    write("hurd-riscv64: console up (rv64gc, QEMU virt)\r\n");
+    puts("hurd-riscv64: console up (rv64gc, QEMU virt)\r\n");
 }
 
 /// Send one byte to the primary console.

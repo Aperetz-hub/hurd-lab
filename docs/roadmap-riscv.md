@@ -79,14 +79,20 @@ Verified on 18/10/2026:
 |---|---|
 | `rustc` / `cargo` / `rustup` | installed (stable 1.99.1, nightly 1.101.0-nightly) — needed to build the skeleton |
 | `rust-src`, `rustfmt`, `clippy` | installed |
-| `qemu-system-riscv64` | **absent** |
-| `riscv64-linux-gnu-gcc` | **absent** |
+| `qemu-system-riscv64` | **installed** (QEMU 10.0.13, Debian) |
+| `riscv64-linux-gnu-gcc` | **installed** (Debian 14.2.0), binutils 2.44 |
 | OS | Debian GNU/Linux 13 (trixie), x86_64 |
 
-The **RISC-V skeleton has never been compiled**: without `qemu-system-riscv64`
-and `riscv64-linux-gnu-gcc`, every "expected output" in `riscv64/README.md` is
-a design intent, not an observed result. First action for whoever picks this up:
-install §3.1, then `riscv64/make check` followed by `make build`.
+Re-verified on 18/10/2026: the two tools that were previously listed here as
+absent are in fact installed, and the OpenSBI firmware is present as
+`/usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin`. The skeleton has
+since been built and booted; see `docs/suivi.md`, section "RISC-V skeleton:
+first boot", and the boot log in `riscv64/README.md`.
+
+So §3.1 had simply never been executed rather than being impossible. Nothing
+in `riscv64/README.md` is a design intent any more as far as milestone 1 goes;
+milestones 2 to 5 are still unwritten and their "expected output" text is
+still intent.
 
 ---
 
@@ -188,6 +194,18 @@ target, so `rust-lld` links the image; `riscv64-linux-gnu-gcc` is for inspection
 and for any future C interop, not for linking.
 
 ### 5.3 Standard library rebuilding (`-Z build-std`)
+
+**Update 18/10/2026.** The skeleton *does* declare `[unstable] build-std` in
+`.cargo/config.toml`, and on the pinned nightly (`1.101.0-nightly`) with the
+`riscv64gc-unknown-none-elf` target it builds cleanly from scratch: the log
+shows `Compiling compiler_builtins` and `Compiling core`. The paragraph below
+predicted a failure that did not happen. It is kept because it records what was
+believed when it was written, and because the `E0152` failure it describes is
+real on other combinations (it was observed on the removed `rust/` workspace,
+on stable, with a `linux-gnu` target). Which factor decides is **not**
+established.
+
+Original text follows.
 
 **The skeleton does not declare `[unstable] build-std`**, and that is
 deliberate: listing it in `.cargo/config.toml` turns standard-library

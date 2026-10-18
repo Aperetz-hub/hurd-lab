@@ -1323,6 +1323,209 @@ is what was built and measured here.
   patches as one series or patch 1 alone;
 - actually send them. This session did not.
 
+## RISC-V skeleton: first boot (18/10/2026)
+
+### FACT — toolchain (step 3.1: re-verified, and the earlier report was wrong)
+
+```
+$ command -v qemu-system-riscv64 riscv64-linux-gnu-gcc riscv64-linux-gnu-objdump
+/usr/bin/qemu-system-riscv64
+/usr/bin/riscv64-linux-gnu-gcc
+/usr/bin/riscv64-linux-gnu-objdump
+
+$ qemu-system-riscv64 --version | head -1
+QEMU emulator version 10.0.13 (Debian 1:10.0.13+ds-0+deb13u1)
+
+$ riscv64-linux-gnu-gcc --version | head -1
+riscv64-linux-gnu-gcc (Debian 14.2.0-19) 14.2.0
+
+$ riscv64-linux-gnu-ld --version | head -1
+GNU ld (GNU Binutils for Debian) 2.44
+
+$ ls /usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin
+/usr/share/qemu/opensbi-riscv64-generic-fw_dynamic.bin
+```
+
+So `qemu-system-riscv64`, `riscv64-linux-gnu-gcc` and the OpenSBI firmware
+are all present. `docs/roadmap-riscv.md` §3.2 still says they are absent;
+that statement is stale and has been corrected.
+
+**No package installation was needed, so the privilege question never arose.**
+For the record, installing anything via `apt` *would* have been blocked:
+
+```
+$ sudo -n true
+sudo: The "no new privileges" flag is set. It prevents sudo from running as root.
+```
+
+The Rust side needed no privileges either: `rustup` installed the pinned
+nightly toolchain and the `riscv64gc-unknown-none-elf` target into `$HOME`.
+
+```
+$ rustup --version ; rustc --version
+rustup 1.29.1 (d95a37b6a 2026-08-13)
+rustc 1.99.1 (58cf8f9c3 2026-10-13)     # stable, before the pin took effect
+$ rustc --version --toolchain nightly   # after rust-toolchain.toml applied
+rustc 1.101.0-nightly (5d8fec066 2026-10-16)
+$ rustup target list --installed --toolchain nightly
+riscv64gc-unknown-none-elf
+x86_64-unknown-linux-gnu
+```
+
+### FACT — what existed before (step 3.2)
+
+Twelve files: workspace `Cargo.toml`, `rust-toolchain.toml`,
+`.cargo/config.toml`, `Makefile`, `README.md`, and one crate
+`crates/hurd-riscv64-boot/` with `Cargo.toml`, `linker/riscv64-virt.ld` and
+six sources (`main.rs`, `boot.rs`, `sbi.rs`, `uart.rs`, `console.rs`).
+So the linker script, the boot assembly and the SBI console code all existed.
+What was missing was the opposite of a design: nothing had ever been compiled.
+
+### FACT — the build (step 3.3), and the three defects that stopped it
+
+First build, verbatim:
+
+```
+error[E0423]: cannot find function `write` in this scope
+  --> crates/hurd-riscv64-boot/src/console.rs:31:5
+   |
+31 |     write("hurd-riscv64: console up (rv64gc, QEMU virt)\r\n");
+   |     ^^^^^ not found in this scope
+error: could not compile `hurd-riscv64-boot` (bin "hurd-riscv64-boot")
+make: *** [Makefile:40: build] Error 101
+```
+
+The console module's string helper is called `puts`; `write` was a typo.
+Fixed by changing the one call.
+
+Second build:
+
+```
+error: linking with `rust-lld` failed: exit status: 1
+  = note: rust-lld: error: cannot find linker script linker/riscv64-virt.ld
+```
+
+`.cargo/config.toml` passed `-Tlinker/riscv64-virt.ld`, which is relative to
+the *crate*, but the link step runs with the **workspace root** as its working
+directory. Confirmed by trying the workspace-relative path, which linked
+immediately. Fixed, with a comment recording the cwd dependency.
+
+Final build, from `make clean`, verbatim (warning elided here, reproduced in
+full in the commit log of this session's build):
+
+```
+$ make build
+cargo build --profile release
+   Compiling compiler_builtins v0.1.160 (...)
+   Compiling core v0.0.0 (...)
+   Compiling hurd-riscv64-boot v0.1.0 (...)
+warning: method `puts` is never used
+  --> crates/hurd-riscv64-boot/src/uart.rs:95:12
+    Finished `release` profile [optimized + debuginfo] target(s) in 16.39s
+built: target/riscv64gc-unknown-none-elf/release/hurd-riscv64-boot
+```
+
+One pre-existing warning remains (`Uart::puts` is unused); it was left alone.
+
+`[unstable] build-std` in `.cargo/config.toml` was **not** removed and did not
+cause the `error[E0152]: duplicate lang item in crate core` that
+`docs/roadmap-riscv.md` §5.3 predicts: on this nightly, with a `none` target,
+rebuilding `core` from source works (the log above shows `Compiling core`).
+
+### FACT — the first boot, and the defect that made it silent (step 3.4)
+
+The first boot after fixing the two build errors produced **no kernel output
+at all** — only OpenSBI's banner, ending with
+`Domain0 Next Address: 0x0000000080200000` / `Domain0 Next Mode: S-mode`.
+Rather than guess, the machine was asked:
+
+```
+$ qemu-system-riscv64 ... -d int,guest_errors -D /tmp/qemu-int.log
+riscv_cpu_do_interrupt: hart:0, async:0, cause:0000000000000002,
+    epc:0x0000000080200000, tval:0x00000000f14022f3, desc=illegal_instruction
+   (repeated 2.4 million times)
+```
+
+`cause 2` is an illegal instruction, at `epc = 0x80200000`, and `tval` is the
+faulting instruction word, which `objdump` identifies as the **first**
+instruction of `_start`:
+
+```
+80200000: f14022f3   csrr t0,mhartid
+```
+
+`mhartid` is a machine-mode CSR. Reading it from S-mode raises an illegal
+instruction exception, so the hart trapped on its very first instruction and
+never reached `kmain`. OpenSBI's S-mode entry passes the hart id in `a0`, so
+the park loop now reads `a0`:
+
+```
+80200000: e101   bnez a0,80200000 <_start>
+```
+
+Boot after that change, `-smp 1`, `-m 256M`, `-bios default`, kernel from
+`target/riscv64gc-unknown-none-elf/release/hurd-riscv64-boot`:
+
+```
+hurd-riscv64: console up (rv64gc, QEMU virt)
+SBI hart id 0x0
+
+SBI legacy_putc works: yes
+SBI spec version 0.0
+SBI impl id 0x0
+hurd-riscv64: milestone 1 reached, halting
+```
+
+The image is a RISC-V `EXEC` ELF with entry point and first `PT_LOAD` both at
+`0x80200000`, matching what OpenSBI hands over.
+
+The `SBI hart id` line was added in this pass so that "`a0` is the hart id"
+would be measured instead of assumed. It first printed `0xa`, which was wrong:
+the value was read after `console::init()`, and a function call is free to
+clobber `a0`. Capturing it before the first call prints `0x0`. Measured across
+`-smp 1`, `2`, `3`, `4`: exactly one `console up` line each time, always
+reporting `0x0`, i.e. the other harts park and only hart 0 runs.
+
+### FACT — `make disasm` was broken
+
+```
+$ make disasm
+== entry point ==
+make: *** [Makefile:72: disasm] Error 1
+```
+
+Two independent causes, both reproduced: the host `readelf` is French-localized
+so `grep -i "entry point"` never matches ("Point d'entrée"), and the host
+`objdump` refuses the file outright
+(`objdump: cannot disassemble for architecture UNKNOWN!`). The target now uses
+the cross binutils when present and runs under `LC_ALL=C`.
+
+### PLAUSIBLE HYPOTHESIS — not established, recorded not worked around
+
+- The SBI base-extension calls returning 0 (`sbi_get_spec_version` against a
+  firmware that reports `Runtime SBI Version : 2.0`, `sbi_get_impl_id`, and
+  `legacy_putch` reporting success while the `!` never appears) is *not*
+  explained by the calling convention: the disassembly shows `li a7,16` with
+  `li a6,0`/`li a6,1` and a single `ecall`, which is the documented SBI form.
+  Something else is wrong, and it was not diagnosed. No claim is made about
+  what.
+- `Uart::init()` writes the divisor latch with `DLAB` never set, because the
+  constant named `REG_LSR` (offset 5, read-only Line Status Register) is used
+  where the Line **Control** Register (offset 3) belongs. This is latent under
+  QEMU, whose emulated 16550 and OpenSBI already leave the line in 8N1; it
+  would matter on real hardware. **Not fixed**, because it did not block the
+  bring-up and the brief was to change only what blocked the first boot.
+
+### SPECULATION
+
+Nothing is claimed about whether the rest of the boot chain (device tree,
+CLINT timer, PLIC, S-mode page tables) will work. None of it has been written.
+
+### Scope note
+
+Milestone 1 only. The success criterion for this pass — the kernel's first SBI
+console message appears — is met. Everything after it is untouched.
+
 ## Disk safety (permanent rules)
 
 - **Never** boot `debian-hurd-amd64-*.img` in write mode.

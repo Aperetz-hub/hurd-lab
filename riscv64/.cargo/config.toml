@@ -6,7 +6,11 @@ rustflags = [
     # Bare metal: there is no unwinder and no OS to abort into.
     "-C", "panic=abort",
     # Our own linker script: the default layout assumes an OS loader.
-    "-C", "link-arg=-Tlinker/riscv64-virt.ld",
+    # NOTE: the path is relative to the *workspace root* (the directory cargo
+    # is invoked from), not to the crate. Running `cargo build` from inside
+    # `crates/hurd-riscv64-boot/` will not find the script; use `make build`,
+    # or pass RUSTFLAGS with an absolute -T path.
+    "-C", "link-arg=-Tcrates/hurd-riscv64-boot/linker/riscv64-virt.ld",
     # Drop everything the entry point does not reach (libcore included).
     "-C", "link-arg=--gc-sections",
 ]

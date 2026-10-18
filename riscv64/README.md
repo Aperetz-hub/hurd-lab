@@ -6,10 +6,11 @@ that proves the whole bring-up chain works end to end — firmware handoff,
 S-mode entry, SBI console output — so that everything above it can be built on
 a foundation that is known to reach `main`.
 
-> Status: **blueprint**. It has not been compiled on the reference host; the
-> toolchain it needs is not installed there yet. See
-> `docs/roadmap-riscv.md` for the exact setup, and treat "it builds" as a
-> to-do rather than a claim.
+> Status: **milestone 1 boots** (18/10/2026). `make build` then
+> `make run` produces the kernel's first console line on QEMU `virt` under
+> OpenSBI v1.6. See "Boot log" below for the captured output, and
+> `docs/suivi.md` for what was measured, what was fixed and what is still
+> unknown. See `docs/roadmap-riscv.md` for the toolchain setup.
 
 ## What is in here
 
@@ -41,6 +42,54 @@ riscv64/
 `_start` is `global_asm!` rather than a separate `.S` file so the whole boot
 path is one unit that `cargo` tracks. If that ever stops being possible, the
 drop-in replacement is `src/boot/boot.S` plus `#[link_section]`.
+
+### Boot log (captured 18/10/2026)
+
+```
+$ cd riscv64 && make build
+$ timeout 40 qemu-system-riscv64 -machine virt -m 256M -nographic -no-reboot \
+      -bios default -kernel target/riscv64gc-unknown-none-elf/release/hurd-riscv64-boot
+```
+
+Last lines of the captured console (everything above them is OpenSBI's own
+banner, which ends with `Domain0 Next Address: 0x0000000080200000`,
+`Domain0 Next Mode: S-mode`):
+
+```
+hurd-riscv64: console up (rv64gc, QEMU virt)
+SBI hart id 0x0
+
+SBI legacy_putc works: yes
+SBI spec version 0.0
+SBI impl id 0x0
+hurd-riscv64: milestone 1 reached, halting
+```
+
+`SBI hart id 0x0` is the SBI boot-protocol hart id read out of `a0`. It was
+added in this pass precisely so that the "a0 is the hart id" claim is
+measured rather than assumed. With `-smp 2`, `-smp 3` and `-smp 4` the same
+image still prints exactly one `console up` line and reports `0x0`, i.e. the
+other harts park and only hart 0 runs.
+
+### Known defects, not fixed here
+
+Found while bringing this up; both are recorded rather than silently repaired,
+because the bring-up brief was to fix only what blocked the first boot.
+
+- **`Uart::init()` programs the divisor into the wrong register.** The
+  constant named `REG_LSR` (offset 5, the read-only Line Status Register) is
+  used where the Line **Control** Register (offset 3) is meant, so `DLAB` is
+  never set and the baud divisor is never written; the two divisor writes go
+  to THR/RBR instead. This is latent on QEMU because the emulated 16550 and
+  OpenSBI already leave the line in 8N1. It would matter on real hardware.
+- **The SBI base-extension calls return 0.** `sbi_get_spec_version()` returns
+  0 although OpenSBI reports `Runtime SBI Version : 2.0`, and
+  `sbi_get_impl_id()` returns 0; `legacy_putch` also reports success while the
+  `!` it was asked to emit does not appear anywhere in the captured console.
+  The disassembly shows spec-conformant calls (`li a7,16` / `li a6,0` or `1`
+  / `ecall`), so the calling convention is right and the cause is not
+  established. Consequently the skeleton's own string "SBI legacy_putc works:
+  yes" is a claim the capture does not corroborate.
 
 ## Console: two sinks, one API
 

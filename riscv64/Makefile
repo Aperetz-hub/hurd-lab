@@ -19,6 +19,14 @@ QEMU        ?= qemu-system-riscv64
 MEM         ?= 256M
 CARGO       ?= cargo
 
+# The host binutils cannot disassemble RISC-V ("cannot disassemble for
+# architecture UNKNOWN"), and readelf localises its output, so "grep -i
+# 'entry point'" only matches under LC_ALL=C. Prefer the cross binutils and
+# fall back to the host ones; LC_ALL=C keeps the grep locale-independent.
+READELF     ?= $(shell command -v riscv64-linux-gnu-readelf 2>/dev/null || command -v readelf)
+OBJDUMP     ?= $(shell command -v riscv64-linux-gnu-objdump 2>/dev/null || command -v objdump)
+export LC_ALL = C
+
 .PHONY: all check build build-std run debug disasm clean
 
 all: build
@@ -66,13 +74,13 @@ debug: build
 
 disasm: build
 	@echo "== program headers =="
-	@readelf -lW $(BIN) | sed -n '1,25p'
+	@$(READELF) -lW $(BIN) | sed -n '1,25p'
 	@echo
 	@echo "== entry point =="
-	@readelf -hW $(BIN) | grep -i "entry point"
+	@$(READELF) -hW $(BIN) | grep -i "entry point"
 	@echo
 	@echo "== first instructions =="
-	@objdump -d $(BIN) | sed -n '/<_start>:/,/^$$/p' | head -40
+	@$(OBJDUMP) -d $(BIN) | sed -n '/<_start>:/,/^$$/p' | head -40
 
 clean:
 	$(CARGO) clean
